@@ -46,10 +46,10 @@ void removeSpaces(std::string str)
 
 //
 
-// Disable one of connection-related functions, sometimes helps to solve server connection issues.
-void DisableUnkNetworkConnectionFunc()
+void DisableSSLCertRequirement()
 {
-	injector::MakeNOP(0x834303, 2);
+	injector::WriteMemory<uint8_t>(0xDE6BA7, 0x15, true);
+	injector::WriteMemory<uint8_t>(0xDE6BA8, 0x00, true);
 }
 
 // [fb::online::OnlineManager::init] Force clients to use socket.
@@ -73,9 +73,9 @@ void EnableLANOnlineTweaks()
 {
 	if (ini.get(OnlineCfg).get("EnableLANOnlineTweaks") == trueStr)
 	{
-		//DisableUnkNetworkConnectionFunc();
 		ForceSocketForClient();
 		SwapPlaylistSPMessage();
+		DisableSSLCertRequirement();
 	}
 }
 
@@ -162,12 +162,21 @@ void ClientComputerNameTweaks()
 	}
 }
 
-// Erase EA Gosredirector address, to make any failure Autolog connection timeouts faster.
+// Erase EA Gosredirector address.
 void EraseRedirectorAddress()
 {
 	if (ini.get(OnlineCfg).get("EraseRedirectorAddress") == trueStr)
 	{
 		injector::MakeNOP(0x2634EA0, 20);
+	}
+}
+
+// Enables "IsGuestAccount" variable, which instantly cancel any Autolog connection attempts.
+void DisableAutologConnectAttempts()
+{
+	if (ini.get(OnlineCfg).get("DisableAutologConnectAttempts") == trueStr)
+	{
+		injector::WriteMemory<uint8_t>(0x8FEF9E, 0x1, true);
 	}
 }
 
@@ -195,7 +204,8 @@ void InitClientPreLoadHelper()
 	ForceFastBoot();
 	ForceCustomInitFlow();
 	ClientComputerNameTweaks();
-	EraseRedirectorAddress();
+	//EraseRedirectorAddress();
+	DisableAutologConnectAttempts();
 }
 
 void InitServerPreLoadHelper()
