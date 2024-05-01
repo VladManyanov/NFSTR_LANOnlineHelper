@@ -10,6 +10,8 @@
 #include "includes/mini/ini.h"
 #include "includes/patterns.hpp"
 
+//#define TESTCONSOLE
+
 // mINI lib gives only strings, so...
 std::string trueStr = "1";
 std::string falseStr = "0";
@@ -39,13 +41,31 @@ __declspec(naked) uint32_t EndianSwap(uint32_t value)
 	}
 }
 
-void removeSpaces(std::string str)
+void RemoveSpaces(std::string str)
 {
 	str.erase(remove(str.begin(), str.end(), ' '), str.end());
 }
 
+void StartTestConsole()
+{
+	AllocConsole();
+	FILE* fDummy;
+	freopen_s(&fDummy, "CONIN$", "r", stdin);
+	freopen_s(&fDummy, "CONOUT$", "w", stderr);
+	freopen_s(&fDummy, "CONOUT$", "w", stdout);
+}
+
+std::string PtrToHexStr(uintptr_t ptr)
+{
+	std::stringstream stream;
+	stream << std::hex << ptr;
+	std::string hexStr = "0x" + stream.str();
+	return hexStr;
+}
+
 //
 
+// Disable secure connections for any client/server backend.
 void DisableSSLCertRequirement()
 {
 	injector::WriteMemory<uint8_t>(0xDE6BA7, 0x15, true);
@@ -69,6 +89,15 @@ void SwapPlaylistSPMessage()
 	injector::WriteMemory<uint8_t>(0x2269338, 0xB0, true);
 }
 
+// By default, View Cars menu limits the car roster which can be saved as "base" player car.
+// On come cases, even default unlocked special cars cannot be saved inside that menu.
+// This tweak allows to save any chosen car from menu.
+// Note: Locked status of the vehicle doesn't matter anymore, it depends on other check.
+void EnableAllCarsAssignment()
+{
+	injector::MakeNOP(0x8848F5, 13);
+}
+
 void EnableLANOnlineTweaks()
 {
 	if (ini.get(OnlineCfg).get("EnableLANOnlineTweaks") == trueStr)
@@ -76,6 +105,7 @@ void EnableLANOnlineTweaks()
 		ForceSocketForClient();
 		SwapPlaylistSPMessage();
 		DisableSSLCertRequirement();
+		EnableAllCarsAssignment();
 	}
 }
 
@@ -162,21 +192,42 @@ void ClientComputerNameTweaks()
 	}
 }
 
-// Erase EA Gosredirector address.
-void EraseRedirectorAddress()
-{
-	if (ini.get(OnlineCfg).get("EraseRedirectorAddress") == trueStr)
-	{
-		injector::MakeNOP(0x2634EA0, 20);
-	}
-}
-
 // Enables "IsGuestAccount" variable, which instantly cancel any Autolog connection attempts.
 void DisableAutologConnectAttempts()
 {
 	if (ini.get(OnlineCfg).get("DisableAutologConnectAttempts") == trueStr)
 	{
 		injector::WriteMemory<uint8_t>(0x8FEF9E, 0x1, true);
+	}
+}
+
+// Force Playlist pointer by default. Without it, game instances will crash on Playlist mode loading.
+// Due to lack of sync requests to load server Playlist, we force it manually.
+// Originally, clients gets this pointer by proceeding through Frontend menus.
+void ForcePlaylistDefaultID()
+{
+	std::string playlistDefaultID = ini.get(ServerCfg).get("ForcePlaylistDefaultID");
+	if (playlistDefaultID == falseStr)
+	{
+		return;
+	}
+	// TODO Load custom PlaylistSetArray and specified ID on it
+	uintptr_t playlistSet_ptr = *(int*)0x27A330C;
+	uintptr_t customPlaylistPtr = *(int*)(playlistSet_ptr + 0x28);
+#ifdef TESTCONSOLE
+	printf("### CSM_Playlist_Ptr: %s\n", PtrToHexStr(customPlaylistPtr).c_str());
+#endif
+	
+	if (IsClient)
+	{
+		uintptr_t clientPlaylistPtr = *(int*)0x28823BC;
+		injector::WriteMemoryRaw(clientPlaylistPtr + 0x10, &customPlaylistPtr, 4, true);
+		return;
+	}
+	if (IsServer)
+	{
+		uint32_t serverPlaylist = 0x27A3310;
+		injector::WriteMemoryRaw(serverPlaylist, &customPlaylistPtr, 4, false);
 	}
 }
 
@@ -193,7 +244,7 @@ void ChangeDebugCarHash()
 	carHashInt = EndianSwap(carHashInt);
 
 	// Prevent game crash and wait for Car List init
-	Sleep(3000); // TODO Work with pointer instead of that
+	// TODO Work with pointer instead of that
 	injector::WriteMemoryRaw(0xF3D42BCC, &carHashInt, 4, true);
 }
 
@@ -204,7 +255,6 @@ void InitClientPreLoadHelper()
 	ForceFastBoot();
 	ForceCustomInitFlow();
 	ClientComputerNameTweaks();
-	//EraseRedirectorAddress();
 	DisableAutologConnectAttempts();
 }
 
@@ -212,17 +262,20 @@ void InitServerPreLoadHelper()
 {
 	ForcePlaylistSession();
 	ForceCareerStatePreLoad();
+	DisableSSLCertRequirement();
 }
 
 void InitClientThreadedHelper()
 {
-	ChangeDebugCarHash(); // Sleep timer here!
+	Sleep(3000);
+	ChangeDebugCarHash();
+	ForcePlaylistDefaultID();
 }
 
 void InitServerThreadedHelper()
 {
-	//
-	return;
+	Sleep(3000);
+	ForcePlaylistDefaultID();
 }
 
 // Apply tweaks, depending on the type of game executable.
@@ -239,6 +292,9 @@ void checkGameExecutableType()
 // Do stuff before game boots up
 void InitHelperPreLoadBase()
 {
+#ifdef TESTCONSOLE
+	StartTestConsole();
+#endif
 	checkGameExecutableType();
 
 	mINI::INIFile file("NFSTR_LANOnlineHelper.ini");
