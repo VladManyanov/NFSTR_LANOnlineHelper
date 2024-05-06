@@ -20,6 +20,7 @@ std::string falseStr = "0";
 std::string GameCfg = "GameSettings";
 std::string OnlineCfg = "OnlineSettings";
 std::string ServerCfg = "ServerSettings";
+std::string PlaylistCfg = "PlaylistSettings";
 
 // Difference between Client and Dedicated Server executables
 const char clientHex[] = "16 51 6A 00 52 8B C8 E8";
@@ -90,6 +91,20 @@ unsigned long StrHashToULong(std::string str)
 
 //
 
+uint32_t GetPlaylistArrayConfigValue()
+{
+	std::string playlistSetArrayIDStr = ini.get(PlaylistCfg).get("ForcePlaylistSetArrayID");
+	return StrToULong(playlistSetArrayIDStr);
+}
+
+uint32_t GetPlaylistIDConfigValue()
+{
+	std::string playlistIDStr = ini.get(PlaylistCfg).get("ForcePlaylistID");
+	uint32_t playlistID = StrToULong(playlistIDStr);
+	if (playlistID < 0) { playlistID = 0; }
+	return playlistID;
+}
+
 // TODO Can be redone by using all we know from server-side GetPlaylistSetOffset()
 uintptr_t LoadPlaylistMap()
 {
@@ -124,12 +139,8 @@ uintptr_t LoadPlaylistMap()
 		*(int*)(playlistArray4Ptr + 0x8) }; // Debug
 
 	// What Playlist array group, and Playlist ID we want?
-	std::string playlistSetArrayIDStr = ini.get(ServerCfg).get("ForcePlaylistSetArrayID");
-	uint32_t playlistSetArrayID = StrToULong(playlistSetArrayIDStr);
-
-	std::string playlistIDStr = ini.get(ServerCfg).get("ForcePlaylistID");
-	uint32_t playlistID = StrToULong(playlistIDStr);
-	if (playlistID < 0) { playlistID = 0; }
+	uint32_t playlistSetArrayID = GetPlaylistArrayConfigValue();
+	uint32_t playlistID = GetPlaylistIDConfigValue();
 
 	uintptr_t customPlaylistPtr;
 	switch (playlistSetArrayID)
@@ -240,15 +251,11 @@ void ForceCareerStatePreLoad()
 }
 
 uintptr_t playlistSetOffset;
-uint8_t GetPlaylistSetOffset()
+void GetPlaylistSetOffset()
 {
 	// What Playlist array group, and Playlist ID we want?
-	std::string playlistSetArrayIDStr = ini.get(ServerCfg).get("ForcePlaylistSetArrayID");
-	uint32_t playlistSetArrayID = StrToULong(playlistSetArrayIDStr);
-
-	std::string playlistIDStr = ini.get(ServerCfg).get("ForcePlaylistID");
-	uint32_t playlistID = StrToULong(playlistIDStr);
-	if (playlistID < 0x0) { playlistID = 0x0; }
+	uint32_t playlistSetArrayID = GetPlaylistArrayConfigValue();
+	uint32_t playlistID = GetPlaylistIDConfigValue();
 
 	uint8_t playlistSetHeaderSkip = 0x28;
 	uint8_t offsetToOurPlaylist = 0x0;
@@ -311,27 +318,37 @@ void ForceServerPlaylistLoading()
 	injector::WriteMemory<uint32_t>(0x10383A2, EndianSwap(0x5EC20400), true);
 }
 
-// Set custom Session ID.
+// Saves custom Session ID on Server boot.
 void ForcePlaylistSession()
+{
+	if (ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == falseStr)
+	{
+		return;
+	}
+	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
+	uint32_t sessionID = StrToULong(sessionIDParam);
+	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
+#ifdef TESTCONSOLE
+	printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(sessionID).c_str());
+#endif
+}
+
+// Disable any Playlist Session ID updates.
+// Ending Vote results also will be ignored, and the same session will be restarted.
+void DisablePlaylistSessionIDChanges()
 {
 	if (ini.get(ServerCfg).get("DisablePlaylistSessionIDChanges") == trueStr)
 	{
-		// Disable Playlist Session ID update from client messages
-		// Note: Ending Vote results will be ignored, and the same session will be restarted.
 		injector::MakeNOP(0x13FBE77, 3);
 	}
-	// Disable initial Session ID assignment to 0
-	//injector::MakeNOP(0x1033DCC, 3);
-
-	// With Debug Playlist request, value will be randomized by server (or client?).
-	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
-	uint32_t sessionID = StrToULong(sessionIDParam);
-	//injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
 }
 
 void SaveRandomSessionId()
 {
 	uint8_t currentSessionId = *(BYTE*)0x027A3304;
+#ifdef TESTCONSOLE
+	printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(currentSessionId).c_str());
+#endif
 	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
 }
 
@@ -345,10 +362,12 @@ __declspec(naked) void FixPlaylistSessionRandomizer_asmPart()
 	}
 }
 
-// 
+// Tweak some of safety-checks, to save first randomized Session ID.
+// Doesn't happen with "normal" game servers, but it's necessary to manually define it with our launch method.
 void FixPlaylistSessionRandomizer()
 {
-	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr)
+	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr
+		|| ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == trueStr)
 	{
 		return;
 	}
@@ -432,20 +451,38 @@ void ResetPlaylistRouteIDTweak()
 	}
 }
 
-// Force Playlist pointer by default. Without it, game instances will crash on Playlist mode loading.
-// Due to lack of sync requests to load server Playlist, we force it manually.
-// Originally, clients gets this pointer by proceeding through Frontend menus.
-// WARNING: All addresses expects original game files.
-void ForcePlaylistPtrInMemory()
+uintptr_t playlistCustomPtr;
+void GetPlaylistPtrFromSet()
 {
-	if (ini.get(ServerCfg).get("EnableForcePlaylistPtrInMemory") == falseStr)
+	playlistCustomPtr = LoadPlaylistMap();
+}
+
+uintptr_t playlistPtrRetPtr = 0x0085DB9A;
+__declspec(naked) void ForcePlaylistPtrInMemory_asmPart()
+{
+	_asm
+	{
+		call GetPlaylistPtrFromSet
+		push playlistCustomPtr
+		pop ECX
+		mov dword ptr [EBP + 0x10], ECX // Set Playlist ptr on Client CareerMode info area
+		jmp playlistPtrRetPtr
+	}
+}
+
+// Force Playlist pointer by default. Without it, Client instances will crash on Playlist mode loading.
+// Due to lack of working sync requests to load server Playlist, we force it manually.
+// Originally, clients gets this pointer by proceeding through Frontend menus.
+void ForceClientPlaylistPtrInMemory()
+{
+	if (ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
 	{
 		return;
 	}
-	uintptr_t customPlaylistPtr = LoadPlaylistMap();
+	injector::MakeNOP(0x1033DD5, 3); // Remove assignment to 0
 
-	uintptr_t clientPlaylistPtr = *(int*)0x28823BC;
-	injector::WriteMemoryRaw(clientPlaylistPtr + 0x10, &customPlaylistPtr, 4, true);
+	injector::MakeNOP(0x85DB93, 7);
+	injector::MakeJMP(0x85DB93, ForcePlaylistPtrInMemory_asmPart);
 	return;
 }
 
@@ -465,7 +502,6 @@ void ChangeDebugCarHash()
 #endif
 
 	// Prevent game crash and wait for Car List init
-	// TODO Find all pointers, or find another way
 	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
 }
 
@@ -477,6 +513,7 @@ void InitClientPreLoadHelper()
 	ForceCustomInitFlow();
 	ClientComputerNameTweaks();
 	DisableAutologConnectAttempts();
+	ForceClientPlaylistPtrInMemory();
 }
 
 void InitServerPreLoadHelper()
@@ -489,14 +526,13 @@ void InitServerPreLoadHelper()
 
 void InitClientThreadedHelper()
 {
-	Sleep(3000);
-	ForcePlaylistPtrInMemory();
+	Sleep(4000); // TODO Find all pointers, or find another way
 	ChangeDebugCarHash();
 }
 
 void InitServerThreadedHelper()
 {
-	Sleep(3000);
+	Sleep(4000); // TODO Works for now
 	ResetPlaylistRouteIDTweak();
 	ForcePlaylistSession();
 }
