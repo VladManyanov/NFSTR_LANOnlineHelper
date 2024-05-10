@@ -1,17 +1,18 @@
 //
-// Need for Speed The Run - Helper script for custom LAN online gameplay
+// Need for Speed: The Run - Helper script for custom LAN online gameplay
 // by Hypercycle / And799 / mRally2
-// code project based on "NFS The Run - Ultimate Unlocker" by Tenjoin
 //
 
 #define WIN32_LEAN_AND_MEAN
+#include "LANOnlineHelper.h"
+
 #include <thread>
 #include "includes/injector/injector.hpp"
 #include "includes/injector/assembly.hpp"
 #include "includes/mini/ini.h"
 #include "includes/patterns.hpp"
 
-//#define TESTCONSOLE
+//
 
 // mINI lib gives only strings, so...
 std::string trueStr = "1";
@@ -22,12 +23,9 @@ std::string OnlineCfg = "OnlineSettings";
 std::string ServerCfg = "ServerSettings";
 std::string PlaylistCfg = "PlaylistSettings";
 
-// Difference between Client and Dedicated Server executables
-const char clientHex[] = "16 51 6A 00 52 8B C8 E8";
-const char serverHex[] = "16 51 52 6A 01 8B C8 E8";
-
 bool IsClient = false;
 bool IsServer = false;
+bool TestConsole = false;
 
 mINI::INIStructure ini;
 
@@ -91,105 +89,101 @@ unsigned long StrHashToULong(std::string str)
 
 //
 
-uint32_t GetPlaylistArrayConfigValue()
+int GetPlaylistArrayConfigValue()
 {
 	std::string playlistSetArrayIDStr = ini.get(PlaylistCfg).get("ForcePlaylistSetArrayID");
-	return StrToULong(playlistSetArrayIDStr);
+	int playlistSetArrayID = StrToULong(playlistSetArrayIDStr);
+	if (playlistSetArrayID < 0) { playlistSetArrayID = 0; }
+	return playlistSetArrayID;
 }
 
-uint32_t GetPlaylistIDConfigValue()
+int GetPlaylistIDConfigValue()
 {
 	std::string playlistIDStr = ini.get(PlaylistCfg).get("ForcePlaylistID");
-	uint32_t playlistID = StrToULong(playlistIDStr);
+	int playlistID = StrToULong(playlistIDStr);
 	if (playlistID < 0) { playlistID = 0; }
 	return playlistID;
 }
 
-// TODO Can be redone by using all we know from server-side GetPlaylistSetOffset()
-uintptr_t LoadPlaylistMap()
-{
-	// Basic Playlist Set entity info
-	int playlistSetSkip = 0x24 + 0x44; // Skip entity base and playlist pointers bytes, to array map
-	// Before playlists pointers starts, there comes a 0x4 int with array size.
-	uintptr_t playlistSet_ptr = *(int*)0x27A330C;
-	unsigned int playlistArrayMapPtr = (int)(playlistSet_ptr + playlistSetSkip);
-
-	uintptr_t playlistArray1Ptr = *(int*)playlistArrayMapPtr;
-	uintptr_t playlistArray1[6] = {
-		*(int*)playlistArray1Ptr, // Mixed
-		*(int*)(playlistArray1Ptr + 0x4), // Exotic
-		*(int*)(playlistArray1Ptr + 0x8), // Muscle
-		*(int*)(playlistArray1Ptr + 0xC), // Underground
-		*(int*)(playlistArray1Ptr + 0x10), // NFS
-		*(int*)(playlistArray1Ptr + 0x14) }; // Supercar
-
-	uintptr_t playlistArray2Ptr = *(int*)(playlistArrayMapPtr + 0x4);
-	uintptr_t playlistArray2[1] = {
-		*(int*)playlistArray2Ptr }; // All
-
-	uintptr_t playlistArray3Ptr = *(int*)(playlistArrayMapPtr + 0x8);
-	uintptr_t playlistArray3[2] = {
-		*(int*)playlistArray3Ptr, // Smoketest
-		*(int*)(playlistArray3Ptr + 0x4) }; // AllTracksTenCars
-
-	uintptr_t playlistArray4Ptr = *(int*)(playlistArrayMapPtr + 0xC);
-	uintptr_t playlistArray4[3] = {
-		*(int*)playlistArray4Ptr, // Playtest
-		*(int*)(playlistArray4Ptr + 0x4), // Stage2
-		*(int*)(playlistArray4Ptr + 0x8) }; // Debug
-
-	// What Playlist array group, and Playlist ID we want?
-	uint32_t playlistSetArrayID = GetPlaylistArrayConfigValue();
-	uint32_t playlistID = GetPlaylistIDConfigValue();
-
-	uintptr_t customPlaylistPtr;
-	switch (playlistSetArrayID)
+// GUID takes 0x10 bytes, pointers refers on class after it.
+// Usually Array Pointers contains sizes at -0x4 position.
+namespace ebx
+{ 
+	namespace playlists
 	{
-	default:
-	case 0:
-		if (playlistID >= sizeof(playlistArray1)) { playlistID = 0; }
-		customPlaylistPtr = playlistArray1[playlistID];
-		break;
-	case 1:
-		if (playlistID >= sizeof(playlistArray2)) { playlistID = 0; }
-		customPlaylistPtr = playlistArray2[playlistID];
-		break;
-	case 2:
-		if (playlistID >= sizeof(playlistArray3)) { playlistID = 0; }
-		customPlaylistPtr = playlistArray3[playlistID];
-		break;
-	case 3:
-		if (playlistID >= sizeof(playlistArray4)) { playlistID = 0; }
-		customPlaylistPtr = playlistArray4[playlistID];
-		break;
+		class PlaylistSet {
+		public:
+			uintptr_t pt_EBXTypeHeader;		// 0x00
+			uintptr_t pt_UnkRef;			// 0x04
+			char EBXUnkCommonPart[4];		// 0x08
+			uintptr_t pt_EBXNamePtr;		// 0x0C
+			uintptr_t pt_DefaultPlaylist;	// 0x10
+			uintptr_t ar_PlaylistGroups;	// 0x14
+			char _Padding[12];				// 0x18
+		};
+		class PlaylistGroup {
+		public:
+			int count;
+			std::vector<uintptr_t> pt_Playlists;
+		};
+		class PlaylistGroupArray {
+		public:
+			int count;
+			std::vector<uintptr_t> pt_PlaylistGroup;
+			std::vector<PlaylistGroup> PlaylistGroups;
+		};
+	}
+	
+};
+
+uintptr_t playlistSet_ptr = 0x27A330C;
+uintptr_t customPlaylistPtr;
+// Get PlaylistSet to find our specified Playlist pointer.
+void LoadPlaylistMap()
+{
+	ebx::playlists::PlaylistSet* playlistSet = *(ebx::playlists::PlaylistSet**)playlistSet_ptr;
+	ebx::playlists::PlaylistGroupArray groupArray { };
+
+	groupArray.count = *(int*)(playlistSet->ar_PlaylistGroups - 0x4);
+
+	for (int a{ 0 }; a < groupArray.count; a++)
+	{
+		groupArray.pt_PlaylistGroup.push_back(
+			(*(int*)(playlistSet->ar_PlaylistGroups + (0x4 * a)) ) );
+		//printf("### pt_PlaylistGroup 1st entry: %s\n", PtrToHexStr(groupArray.pt_PlaylistGroup[a]).c_str());
+
+		ebx::playlists::PlaylistGroup playlistGroup { };
+		playlistGroup.count = *(int*)(groupArray.pt_PlaylistGroup[a] - 0x4);
+
+		for (int p{ 0 }; p < playlistGroup.count; p++)
+		{
+			playlistGroup.pt_Playlists.push_back(
+				(*(int*)(groupArray.pt_PlaylistGroup[a] + (0x4 * p)) ) );
+			//printf("### pt_Playlists entry: %s\n", PtrToHexStr(playlistGroup.pt_Playlists[p]).c_str());
+		}
+		groupArray.PlaylistGroups.push_back(playlistGroup);
 	}
 
-#ifdef TESTCONSOLE
-	printf("### CSM_PlaylistArrayMap_Ptr: %s\n", PtrToHexStr(playlistArrayMapPtr).c_str());
-	printf("### CSM_PlaylistArray1_Ptr: %s\n", PtrToHexStr(playlistArray1Ptr).c_str());
-	printf("### CSM_PlaylistArray1_0: %s\n", PtrToHexStr(playlistArray1[0]).c_str());
-	printf("### CSM_PlaylistArray1_1: %s\n", PtrToHexStr(playlistArray1[1]).c_str());
-	printf("### CSM_PlaylistArray1_2: %s\n", PtrToHexStr(playlistArray1[2]).c_str());
-	printf("### CSM_PlaylistArray1_3: %s\n", PtrToHexStr(playlistArray1[3]).c_str());
-	printf("### CSM_PlaylistArray1_4: %s\n", PtrToHexStr(playlistArray1[4]).c_str());
-	printf("### CSM_PlaylistArray1_5: %s\n\n", PtrToHexStr(playlistArray1[5]).c_str());
+	// What Playlist array group, and Playlist ID we want?
+	int playlistSetArrayID = GetPlaylistArrayConfigValue();
+	int playlistID = GetPlaylistIDConfigValue();
 
-	printf("### CSM_PlaylistArray2_Ptr: %s\n", PtrToHexStr(playlistArray2Ptr).c_str());
-	printf("### CSM_PlaylistArray2_0: %s\n\n", PtrToHexStr(playlistArray2[0]).c_str());
-
-	printf("### CSM_PlaylistArray3_Ptr: %s\n", PtrToHexStr(playlistArray3Ptr).c_str());
-	printf("### CSM_PlaylistArray3_0: %s\n", PtrToHexStr(playlistArray3[0]).c_str());
-	printf("### CSM_PlaylistArray3_1: %s\n\n", PtrToHexStr(playlistArray3[1]).c_str());
-
-	printf("### CSM_PlaylistArray4_Ptr: %s\n", PtrToHexStr(playlistArray4Ptr).c_str());
-	printf("### CSM_PlaylistArray4_0: %s\n", PtrToHexStr(playlistArray4[0]).c_str());
-	printf("### CSM_PlaylistArray4_1: %s\n", PtrToHexStr(playlistArray4[1]).c_str());
-	printf("### CSM_PlaylistArray4_2: %s\n\n", PtrToHexStr(playlistArray4[2]).c_str());
-
-	printf("### CSM_Playlist_Ptr: %s\n", PtrToHexStr(customPlaylistPtr).c_str());
-#endif
-
-	return customPlaylistPtr;
+	if (playlistSetArrayID > (groupArray.count - 1) || 
+		playlistID > (groupArray.PlaylistGroups[playlistSetArrayID].count - 1))
+	{
+		playlistSetArrayID = 0;
+		playlistID = 0;
+		if (TestConsole) {
+			printf("!!! Playlist config values is not correct - all IDs have been reset to 0.\n");
+		}
+	}
+	customPlaylistPtr = groupArray.PlaylistGroups[playlistSetArrayID].pt_Playlists[playlistID];
+	if (TestConsole)
+	{
+		printf("### Career_DefaultPlaylist: %s\n", PtrToHexStr(playlistSet->pt_DefaultPlaylist).c_str());
+		printf("### Career_PlaylistSet size: %d\n", groupArray.count);
+		printf("### Career_PlaylistPtr: %s\n\n", PtrToHexStr(customPlaylistPtr).c_str());
+	}
 }
 
 //
@@ -250,50 +244,14 @@ void ForceCareerStatePreLoad()
 	}
 }
 
-uintptr_t playlistSetOffset;
-void GetPlaylistSetOffset()
-{
-	// What Playlist array group, and Playlist ID we want?
-	uint32_t playlistSetArrayID = GetPlaylistArrayConfigValue();
-	uint32_t playlistID = GetPlaylistIDConfigValue();
-
-	uint8_t playlistSetHeaderSkip = 0x28;
-	uint8_t offsetToOurPlaylist = 0x0;
-	uint8_t playlistArray_0_Offset[6] = { 0x0, 0x4, 0x8, 0xC, 0x10, 0x14 };
-	uint8_t playlistArray_1_Offset = 0x1C;
-	uint8_t playlistArray_2_Offset[2] = { 0x24, 0x28 };
-	uint8_t playlistArray_3_Offset[3] = { 0x30, 0x34, 0x38 };
-
-	switch (playlistSetArrayID)
-	{
-	default:
-	case 0: // Mixed, Exotic, Muscle, Underground, NFS, Supercar
-		if (playlistID >= sizeof(playlistArray_0_Offset)) { playlistID = 0x0; }
-		offsetToOurPlaylist = playlistArray_0_Offset[playlistID];
-		break;
-	case 1: // All
-		offsetToOurPlaylist = playlistArray_1_Offset;
-		break;
-	case 2: // Smoketest, AllTracksTenCars
-		if (playlistID >= sizeof(playlistArray_2_Offset)) { playlistID = 0x0; }
-		offsetToOurPlaylist = playlistArray_2_Offset[playlistID];
-		break;
-	case 3: // Playtest, Stage2, Debug
-		if (playlistID >= sizeof(playlistArray_3_Offset)) { playlistID = 0x0; }
-		offsetToOurPlaylist = playlistArray_3_Offset[playlistID];
-		break;
-	}
-	playlistSetOffset = playlistSetHeaderSkip + offsetToOurPlaylist;
-}
-
 uintptr_t playlistLoaderRetPtr = 0x010383A2;
 __declspec(naked) void ForcePlaylistLoading_asmPart()
 {
 	_asm
 	{
-		mov EAX, dword ptr [ESI + 0xC] // Get PlaylistSet
-		add EAX, playlistSetOffset // Add offset to reach Playlist ptr
-		mov EAX, dword ptr [EAX] // Get Playlist ptr
+		call LoadPlaylistMap
+		push customPlaylistPtr
+		pop EAX
 		mov dword ptr [ESI + 0x10], EAX // Save Playlist ptr on 0x027A3310
 		jmp playlistLoaderRetPtr
 	}
@@ -312,7 +270,6 @@ void ForceServerPlaylistLoading()
 	injector::WriteMemory<uint8_t>(0x14011D1, 0xC, true);
 
 	// Set our Playlist ptr on specific place, to properly load resoures
-	GetPlaylistSetOffset();
 	injector::MakeNOP(0x103839D, 9);
 	injector::MakeJMP(0x103839D, ForcePlaylistLoading_asmPart);
 	injector::WriteMemory<uint32_t>(0x10383A2, EndianSwap(0x5EC20400), true);
@@ -328,9 +285,10 @@ void ForcePlaylistSession()
 	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
 	uint32_t sessionID = StrToULong(sessionIDParam);
 	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
-#ifdef TESTCONSOLE
-	printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(sessionID).c_str());
-#endif
+	if (TestConsole)
+	{
+		printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(sessionID).c_str());
+	}
 }
 
 // Disable any Playlist Session ID updates.
@@ -346,10 +304,11 @@ void DisablePlaylistSessionIDChanges()
 void SaveRandomSessionId()
 {
 	uint8_t currentSessionId = *(BYTE*)0x027A3304;
-#ifdef TESTCONSOLE
-	printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(currentSessionId).c_str());
-#endif
 	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
+	if (TestConsole)
+	{
+		printf("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
+	}
 }
 
 uintptr_t playlistSessionLoaderRetPtr = 0x013FFE4B;
@@ -451,19 +410,13 @@ void ResetPlaylistRouteIDTweak()
 	}
 }
 
-uintptr_t playlistCustomPtr;
-void GetPlaylistPtrFromSet()
-{
-	playlistCustomPtr = LoadPlaylistMap();
-}
-
 uintptr_t playlistPtrRetPtr = 0x0085DB9A;
 __declspec(naked) void ForcePlaylistPtrInMemory_asmPart()
 {
 	_asm
 	{
-		call GetPlaylistPtrFromSet
-		push playlistCustomPtr
+		call LoadPlaylistMap
+		push customPlaylistPtr
 		pop ECX
 		mov dword ptr [EBP + 0x10], ECX // Set Playlist ptr on Client CareerMode info area
 		jmp playlistPtrRetPtr
@@ -497,9 +450,10 @@ void ChangeDebugCarHash()
 	}
 	uint32_t carHashInt = StrHashToULong(debugCarHash);
 
-#ifdef TESTCONSOLE
-	printf("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
-#endif
+	if (TestConsole)
+	{
+		printf("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
+	}
 
 	// Prevent game crash and wait for Car List init
 	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
@@ -551,13 +505,16 @@ void CheckGameExecutableType()
 // Do stuff before game boots up
 void InitHelperPreLoadBase()
 {
-#ifdef TESTCONSOLE
-	StartTestConsole();
-#endif
 	CheckGameExecutableType();
 
 	mINI::INIFile file("NFSTR_LANOnlineHelper.ini");
 	file.read(ini);
+	
+	if (ini.get(GameCfg).get("EnableTestConsole") == trueStr)
+	{
+		TestConsole = true;
+		StartTestConsole();
+	}
 
 	if (IsClient)
 	{
