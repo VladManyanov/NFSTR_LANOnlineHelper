@@ -206,10 +206,7 @@ void ForceSocketForClient()
 // Instead, we sent PlaylistMP message, to set up Playlist mode on client-server sides.
 void SwapPlaylistSPMessage()
 {
-	injector::WriteMemory<uint8_t>(0x2269335, 0xFC, true);
-	injector::WriteMemory<uint8_t>(0x2269336, 0x08, true);
-	injector::WriteMemory<uint8_t>(0x2269337, 0x5A, true);
-	injector::WriteMemory<uint8_t>(0x2269338, 0xB0, true);
+	injector::WriteMemory<uint32_t>(0x2269335, EndianSwap(0xFC085AB0), true);
 }
 
 // By default, View Cars menu limits the car roster which can be saved as "base" player car.
@@ -287,7 +284,7 @@ void ForcePlaylistSession()
 	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
 	if (TestConsole)
 	{
-		printf("### CSM_PlaylistSessionId: %s\n\n", SWIntToHexStr(sessionID).c_str());
+		printf("### CSM_PlaylistSessionId: %d\n\n", sessionID);
 	}
 }
 
@@ -410,6 +407,13 @@ void ResetPlaylistRouteIDTweak()
 	}
 }
 
+auto Exe_ClientCareerSetObjectives = reinterpret_cast<void(__fastcall*)(int ptr)>(0x84A350);
+uintptr_t clientCareerEntityPtr = 0x028823BC;
+void ClientCareerSetObjectives()
+{
+	Exe_ClientCareerSetObjectives(*(int*)clientCareerEntityPtr);
+}
+
 uintptr_t playlistPtrRetPtr = 0x0085DB9A;
 __declspec(naked) void ForcePlaylistPtrInMemory_asmPart()
 {
@@ -419,6 +423,7 @@ __declspec(naked) void ForcePlaylistPtrInMemory_asmPart()
 		push customPlaylistPtr
 		pop ECX
 		mov dword ptr [EBP + 0x10], ECX // Set Playlist ptr on Client CareerMode info area
+		call ClientCareerSetObjectives // Now we must load Playlist Objectives
 		jmp playlistPtrRetPtr
 	}
 }
