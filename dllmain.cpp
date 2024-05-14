@@ -55,6 +55,13 @@ void StartTestConsole()
 	freopen_s(&fDummy, "CONOUT$", "w", stdout);
 }
 
+template<typename... Args>
+void TestConsolePrint(const char* format, Args&&... args) {
+	if (TestConsole) {
+		std::printf(format, std::forward<Args>(args)...);
+	}
+}
+
 std::string PtrToHexStr(uintptr_t ptr)
 {
 	std::stringstream stream;
@@ -89,22 +96,6 @@ unsigned long StrHashToULong(std::string str)
 
 //
 
-int GetPlaylistArrayConfigValue()
-{
-	std::string playlistSetArrayIDStr = ini.get(PlaylistCfg).get("ForcePlaylistSetArrayID");
-	int playlistSetArrayID = StrToULong(playlistSetArrayIDStr);
-	if (playlistSetArrayID < 0) { playlistSetArrayID = 0; }
-	return playlistSetArrayID;
-}
-
-int GetPlaylistIDConfigValue()
-{
-	std::string playlistIDStr = ini.get(PlaylistCfg).get("ForcePlaylistID");
-	int playlistID = StrToULong(playlistIDStr);
-	if (playlistID < 0) { playlistID = 0; }
-	return playlistID;
-}
-
 // GUID takes 0x10 bytes, pointers refers on class after it.
 // Usually Array Pointers contains sizes at -0x4 position.
 namespace ebx
@@ -135,6 +126,60 @@ namespace ebx
 	}
 	
 };
+
+uintptr_t clientOnlineEntityPtr = 0x2888F7C;
+uintptr_t clientCareerEntityPtr = 0x28823BC;
+namespace mem
+{
+	namespace Client
+	{
+		class OnlineEntity {
+		public:
+			char EntityHeaderPart[8];		// 0x00
+			BYTE IsSinglePlayer;			// 0x08
+			BYTE IsLocalHost;				// 0x09
+			BYTE IsInprocClient;			// 0x0A
+			BYTE _UnkByte;					// 0x0A
+			char _VarData1[64];				// 0x0C
+			uint32_t SocketMode;			// 0x4C
+			char _VarData2[84];				// 0x50
+			uint32_t ConnectionState;		// 0xA4
+		};
+
+		class CareerEntity {
+		public:
+			char EntityHeaderPart[4];		// 0x00
+			uint32_t PlaylistSessionId;		// 0x04
+			uint32_t PlaylistRouteId;		// 0x08
+			uintptr_t PlaylistSet;			// 0x0C
+			uintptr_t CurrentPlaylist;		// 0x10
+			char _VarData1[452];			// 0x14
+			uint32_t CareerState;			// 0x1D8
+			char _VarData2[12];				// 0x1DC
+			uint32_t PListObjectivesValue;	// 0x1E8
+		};
+	}
+}
+
+//
+
+int GetPlaylistArrayConfigValue()
+{
+	std::string playlistSetArrayIDStr = ini.get(PlaylistCfg).get("ForcePlaylistSetArrayID");
+	int playlistSetArrayID = StrToULong(playlistSetArrayIDStr);
+	if (playlistSetArrayID < 0) { playlistSetArrayID = 0; }
+	return playlistSetArrayID;
+}
+
+int GetPlaylistIDConfigValue()
+{
+	std::string playlistIDStr = ini.get(PlaylistCfg).get("ForcePlaylistID");
+	int playlistID = StrToULong(playlistIDStr);
+	if (playlistID < 0) { playlistID = 0; }
+	return playlistID;
+}
+
+//
 
 uintptr_t playlistSet_ptr = 0x27A330C;
 uintptr_t customPlaylistPtr;
@@ -173,9 +218,7 @@ void LoadPlaylistMap()
 	{
 		playlistSetArrayID = 0;
 		playlistID = 0;
-		if (TestConsole) {
-			printf("!!! Playlist config values is not correct - all IDs have been reset to 0.\n");
-		}
+		TestConsolePrint("!!! Playlist config values is not correct - all IDs have been reset to 0.\n");
 	}
 	customPlaylistPtr = groupArray.PlaylistGroups[playlistSetArrayID].pt_Playlists[playlistID];
 	if (TestConsole)
@@ -282,10 +325,7 @@ void ForcePlaylistSession()
 	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
 	uint32_t sessionID = StrToULong(sessionIDParam);
 	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
-	if (TestConsole)
-	{
-		printf("### CSM_PlaylistSessionId: %d\n\n", sessionID);
-	}
+	TestConsolePrint("### CSM_PlaylistSessionId: %d\n\n", sessionID);
 }
 
 // Disable any Playlist Session ID updates.
@@ -302,10 +342,7 @@ void SaveRandomSessionId()
 {
 	uint8_t currentSessionId = *(BYTE*)0x027A3304;
 	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
-	if (TestConsole)
-	{
-		printf("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
-	}
+	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
 }
 
 uintptr_t playlistSessionLoaderRetPtr = 0x013FFE4B;
@@ -408,7 +445,6 @@ void ResetPlaylistRouteIDTweak()
 }
 
 auto Exe_ClientCareerSetObjectives = reinterpret_cast<void(__fastcall*)(int ptr)>(0x84A350);
-uintptr_t clientCareerEntityPtr = 0x028823BC;
 void ClientCareerSetObjectives()
 {
 	Exe_ClientCareerSetObjectives(*(int*)clientCareerEntityPtr);
@@ -444,6 +480,43 @@ void ForceClientPlaylistPtrInMemory()
 	return;
 }
 
+// Update Game window Title to display various information.
+void WndTitleStatus()
+{
+	if (ini.get(OnlineCfg).get("EnableWndTitleStatus") == falseStr)
+	{
+		return;
+	}
+	// Disable original title changes during connection attempts
+	injector::MakeNOP(0xE5FE52, 18); 
+	HWND hWnd = FindWindowA(gameName, gameName);
+
+	while (true)
+	{
+		std::string wndTitle = gameName;
+		// On some cases, Online entity will be null
+		bool isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
+		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
+		if (isOnlineEntityExists)
+		{
+			mem::Client::OnlineEntity* onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
+			if (onlineEnt->IsSinglePlayer == 0)
+			{
+				uint32_t connectStatusId = onlineEnt->ConnectionState;
+				if (connectStatusId > sizeof(GameStatus::connectStatus) || connectStatusId < 0)
+				{
+					connectStatusId = 0;
+				}
+				TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
+				wndTitle = GameStatus::baseGameTitle + GameStatus::connectStatus[connectStatusId];
+			}
+		}
+		SetWindowText(hWnd, wndTitle.c_str());
+		Sleep(2000);
+	}
+	
+}
+
 // Swap one of cars from Debug Car List, to your preferred vehicle by hash.
 // Effectively replaces stock "Aston Martin One-77" vehicle on the list.
 void ChangeDebugCarHash()
@@ -454,11 +527,7 @@ void ChangeDebugCarHash()
 		return;
 	}
 	uint32_t carHashInt = StrHashToULong(debugCarHash);
-
-	if (TestConsole)
-	{
-		printf("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
-	}
+	TestConsolePrint("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
 
 	// Prevent game crash and wait for Car List init
 	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
@@ -487,6 +556,7 @@ void InitClientThreadedHelper()
 {
 	Sleep(4000); // TODO Find all pointers, or find another way
 	ChangeDebugCarHash();
+	WndTitleStatus();
 }
 
 void InitServerThreadedHelper()
