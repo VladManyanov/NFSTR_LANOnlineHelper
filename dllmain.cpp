@@ -27,6 +27,12 @@ bool IsClient = false;
 bool IsServer = false;
 bool TestConsole = false;
 
+std::string wndTitle = gameName;
+std::string wndTitleCopy = gameName;
+char* gameCurrentLevelStr = '\0';
+int PlaylistSetArrayID = 0;
+int PlaylistID = 0;
+
 mINI::INIStructure ini;
 
 //
@@ -210,17 +216,17 @@ void LoadPlaylistMap()
 	}
 
 	// What Playlist array group, and Playlist ID we want?
-	int playlistSetArrayID = GetPlaylistArrayConfigValue();
-	int playlistID = GetPlaylistIDConfigValue();
+	PlaylistSetArrayID = GetPlaylistArrayConfigValue();
+	PlaylistID = GetPlaylistIDConfigValue();
 
-	if (playlistSetArrayID > (groupArray.count - 1) || 
-		playlistID > (groupArray.PlaylistGroups[playlistSetArrayID].count - 1))
+	if (PlaylistSetArrayID > (groupArray.count - 1) ||
+		PlaylistID > (groupArray.PlaylistGroups[PlaylistSetArrayID].count - 1))
 	{
-		playlistSetArrayID = 0;
-		playlistID = 0;
+		PlaylistSetArrayID = 0;
+		PlaylistID = 0;
 		TestConsolePrint("!!! Playlist config values is not correct - all IDs have been reset to 0.\n");
 	}
-	customPlaylistPtr = groupArray.PlaylistGroups[playlistSetArrayID].pt_Playlists[playlistID];
+	customPlaylistPtr = groupArray.PlaylistGroups[PlaylistSetArrayID].pt_Playlists[PlaylistID];
 	if (TestConsole)
 	{
 		printf("### Career_DefaultPlaylist: %s\n", PtrToHexStr(playlistSet->pt_DefaultPlaylist).c_str());
@@ -411,6 +417,7 @@ void EnableDebugModeMenus()
 // Controls the size of GetComputerNameA function result. 
 // Making it as "0" causes code to activate fail-safe client name.
 // Then, we replace default "WIN32DEFAULT" string with custom client name.
+uintptr_t defaultWin32PlayerNamePtr = 0x23EB5A8;
 void ClientComputerNameTweaks()
 {
 	if (ini.get(OnlineCfg).get("DisableUserComputerName") == falseStr)
@@ -422,7 +429,9 @@ void ClientComputerNameTweaks()
 	std::string clientCustomName = ini.get(OnlineCfg).get("ClientName");
 	if (!clientCustomName.empty())
 	{
-		injector::WriteMemoryRaw(0x23EB5A8, &clientCustomName[0], 16, true);
+		injector::WriteMemoryRaw(defaultWin32PlayerNamePtr, &clientCustomName[0], 16, true);
+		// Display Player nickname instead of "You" label
+		injector::WriteMemory<uint32_t>(0x832C32, defaultWin32PlayerNamePtr, true);
 	}
 }
 
@@ -480,6 +489,41 @@ void ForceClientPlaylistPtrInMemory()
 	return;
 }
 
+void WndTitlePlaylistStatus(mem::Client::OnlineEntity* onlineEnt)
+{
+	if (onlineEnt->IsSinglePlayer == 1 || onlineEnt->ConnectionState != 3 ||
+		strlen(gameCurrentLevelStr) == 0 || strcmp(gameCurrentLevelStr, frontendLevel) == 0 ||
+		ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
+	{
+		return;
+	}
+	mem::Client::CareerEntity* careerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
+	//TestConsolePrint("### careerEnt PlaylistSessionId: %d\n", careerEnt->PlaylistSessionId);
+	//TestConsolePrint("### careerEnt PlaylistRouteId: %d\n\n", careerEnt->PlaylistRouteId);
+	wndTitle = GameStatus::baseGameTitle
+		+ "Playlist A" + std::to_string(PlaylistSetArrayID) + " #" + std::to_string(PlaylistID)
+		+ " | Session: " + std::to_string(careerEnt->PlaylistSessionId) 
+		+ ", Race: " + std::to_string(careerEnt->PlaylistRouteId + 1);
+}
+
+void WndTitleConnectionStatus(mem::Client::OnlineEntity* onlineEnt)
+{
+	uint32_t connectStatusId = onlineEnt->ConnectionState;
+	if (onlineEnt->IsSinglePlayer == 1 || // We can't just compare CareerState, because it's not always being reset
+		( connectStatusId == 3 && strlen(gameCurrentLevelStr) > 0 
+			&& strcmp(gameCurrentLevelStr, frontendLevel) != 0 ) )
+	{
+		return;
+	}
+	if (connectStatusId > sizeof(GameStatus::connectStatus) || connectStatusId < 0)
+	{
+		connectStatusId = 0;
+	}
+	TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
+	wndTitle = GameStatus::baseGameTitle + GameStatus::connectStatus[connectStatusId];
+}
+
+uintptr_t gameCurrentLevelPtr = 0x289BDC8;
 // Update Game window Title to display various information.
 void WndTitleStatus()
 {
@@ -493,25 +537,25 @@ void WndTitleStatus()
 
 	while (true)
 	{
-		std::string wndTitle = gameName;
+		wndTitleCopy = wndTitle;
+		wndTitle = gameName;
+		
 		// On some cases, Online entity will be null
 		bool isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
-		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
+		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
 		if (isOnlineEntityExists)
 		{
+			gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
+			TestConsolePrint("### GameCurrentLevel: %s\n", gameCurrentLevelStr);
+
 			mem::Client::OnlineEntity* onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
-			if (onlineEnt->IsSinglePlayer == 0)
-			{
-				uint32_t connectStatusId = onlineEnt->ConnectionState;
-				if (connectStatusId > sizeof(GameStatus::connectStatus) || connectStatusId < 0)
-				{
-					connectStatusId = 0;
-				}
-				TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
-				wndTitle = GameStatus::baseGameTitle + GameStatus::connectStatus[connectStatusId];
-			}
+			WndTitleConnectionStatus(onlineEnt);
+			WndTitlePlaylistStatus(onlineEnt);
 		}
-		SetWindowText(hWnd, wndTitle.c_str());
+		if (wndTitle != wndTitleCopy)
+		{
+			SetWindowText(hWnd, wndTitle.c_str());
+		}
 		Sleep(2000);
 	}
 	
