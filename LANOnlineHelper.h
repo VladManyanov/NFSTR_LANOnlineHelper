@@ -11,7 +11,7 @@ const char frontendLevel[] = "_c4/Levels/FE/FrontEnd/FrontEnd";
 
 namespace GameStatus
 {
-	std::string baseGameTitle = "NFSTR LANs: ";
+	const char baseModTitle[] = "NFSTR LANs: ";
 	std::string connectStatus[] = { "Disconnected", "Pending Connection", "Attempting to Connect...", "Connected", "Disconnecting..." };
-	std::string onlineEntityNotAvailable = "Offline";
+	const char onlineEntityNotAvailable[] = "Offline";
 }

@@ -27,9 +27,10 @@ bool IsClient = false;
 bool IsServer = false;
 bool TestConsole = false;
 
-std::string wndTitle = gameName;
-std::string wndTitleCopy = gameName;
+char wndTitle[100];
+char wndTitleCopy[100];
 char* gameCurrentLevelStr = '\0';
+
 int PlaylistSetArrayID = 0;
 int PlaylistID = 0;
 
@@ -166,6 +167,8 @@ namespace mem
 		};
 	}
 }
+mem::Client::OnlineEntity* onlineEnt;
+mem::Client::CareerEntity* careerEnt;
 
 //
 
@@ -489,29 +492,28 @@ void ForceClientPlaylistPtrInMemory()
 	return;
 }
 
-void WndTitlePlaylistStatus(mem::Client::OnlineEntity* onlineEnt)
+void WndTitlePlaylistStatus()
 {
-	if (onlineEnt->IsSinglePlayer == 1 || onlineEnt->ConnectionState != 3 ||
-		strlen(gameCurrentLevelStr) == 0 || strcmp(gameCurrentLevelStr, frontendLevel) == 0 ||
+	if (onlineEnt->ConnectionState != 3 || strlen(gameCurrentLevelStr) == 0 || 
+		strcmp(gameCurrentLevelStr, frontendLevel) == 0 ||
 		ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
 	{
 		return;
 	}
-	mem::Client::CareerEntity* careerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
+	careerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
 	//TestConsolePrint("### careerEnt PlaylistSessionId: %d\n", careerEnt->PlaylistSessionId);
 	//TestConsolePrint("### careerEnt PlaylistRouteId: %d\n\n", careerEnt->PlaylistRouteId);
-	wndTitle = GameStatus::baseGameTitle
-		+ "Playlist A" + std::to_string(PlaylistSetArrayID) + " #" + std::to_string(PlaylistID)
-		+ " | Session: " + std::to_string(careerEnt->PlaylistSessionId) 
-		+ ", Race: " + std::to_string(careerEnt->PlaylistRouteId + 1);
+	snprintf(wndTitle, 100, "%sPlaylist A%d #%d | Session: %d, Race: %d",
+		GameStatus::baseModTitle, PlaylistSetArrayID, PlaylistID,
+		careerEnt->PlaylistSessionId, careerEnt->PlaylistRouteId + 1);
 }
 
-void WndTitleConnectionStatus(mem::Client::OnlineEntity* onlineEnt)
+void WndTitleConnectionStatus()
 {
 	uint32_t connectStatusId = onlineEnt->ConnectionState;
-	if (onlineEnt->IsSinglePlayer == 1 || // We can't just compare CareerState, because it's not always being reset
-		( connectStatusId == 3 && strlen(gameCurrentLevelStr) > 0 
-			&& strcmp(gameCurrentLevelStr, frontendLevel) != 0 ) )
+	// We can't just compare CareerState, because it's not always being reset
+	if (connectStatusId == 3 && strlen(gameCurrentLevelStr) > 0 
+			&& strcmp(gameCurrentLevelStr, frontendLevel) != 0)
 	{
 		return;
 	}
@@ -520,7 +522,7 @@ void WndTitleConnectionStatus(mem::Client::OnlineEntity* onlineEnt)
 		connectStatusId = 0;
 	}
 	TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
-	wndTitle = GameStatus::baseGameTitle + GameStatus::connectStatus[connectStatusId];
+	snprintf(wndTitle, 100, "%s%s", GameStatus::baseModTitle, GameStatus::connectStatus[connectStatusId].c_str());
 }
 
 uintptr_t gameCurrentLevelPtr = 0x289BDC8;
@@ -537,24 +539,26 @@ void WndTitleStatus()
 
 	while (true)
 	{
-		wndTitleCopy = wndTitle;
-		wndTitle = gameName;
+		snprintf(wndTitleCopy, 100, "%s", wndTitle);
+		snprintf(wndTitle, 100, "%s", gameName);
 		
 		// On some cases, Online entity will be null
 		bool isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
 		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
 		if (isOnlineEntityExists)
 		{
-			gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
-			TestConsolePrint("### GameCurrentLevel: %s\n", gameCurrentLevelStr);
-
-			mem::Client::OnlineEntity* onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
-			WndTitleConnectionStatus(onlineEnt);
-			WndTitlePlaylistStatus(onlineEnt);
+			onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
+			if (onlineEnt->IsSinglePlayer == 0)
+			{
+				gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
+				TestConsolePrint("### GameCurrentLevel: %s\n", gameCurrentLevelStr);
+				WndTitleConnectionStatus();
+				WndTitlePlaylistStatus();
+			}
 		}
-		if (wndTitle != wndTitleCopy)
+		if (strcmp(wndTitle, wndTitleCopy) != 0)
 		{
-			SetWindowText(hWnd, wndTitle.c_str());
+			SetWindowText(hWnd, wndTitle);
 		}
 		Sleep(2000);
 	}
