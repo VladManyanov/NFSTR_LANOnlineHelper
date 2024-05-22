@@ -320,6 +320,9 @@ void ForceServerPlaylistLoading()
 	injector::WriteMemory<uint8_t>(0x14011CF, 0x2, true);
 	injector::WriteMemory<uint8_t>(0x14011D1, 0xC, true);
 
+	// Commands -NfsGame.FELevel AnyWordHereToBreakIt and -Game.DefaultLayerInclusion StartupMode=Game;GameMode=CareerMode
+	// allows to automatically boot Playlist data, but it breaks later on Intermission.
+
 	// Replace Default Playlist with our custom one
 	injector::MakeNOP(0x1400168, 6);
 	injector::MakeJMP(0x1400168, ReplacePlaylistDefaultID_asmPart);
@@ -391,6 +394,25 @@ void ForceFastBoot()
 	if (ini.get(GameCfg).get("GameFastBoot") == trueStr)
 	{
 		injector::WriteMemory<uint8_t>(0x8A9361, 0x01, true);
+	}
+}
+
+// Disable Player respawns when driving backwards.
+void DisableWrongWayRespawn()
+{
+	if (ini.get(GameCfg).get("DisableWrongWayRespawn") == trueStr)
+	{
+		injector::MakeNOP(0x808915, 6);
+	}
+}
+
+// Disable Player respawns when driving outside of allowed route.
+// Note: respawns will still happen on some places.
+void DisableOutOfTrackRespawn()
+{
+	if (ini.get(GameCfg).get("DisableOutOfTrackRespawn") == trueStr)
+	{
+		injector::MakeNOP(0x7FAA8C, 3);
 	}
 }
 
@@ -578,6 +600,8 @@ void InitClientPreLoadHelper()
 	EnableDebugModeMenus();
 	ForceFastBoot();
 	ForceCustomInitFlow();
+	DisableWrongWayRespawn();
+	DisableOutOfTrackRespawn();
 	ClientComputerNameTweaks();
 	DisableAutologConnectAttempts();
 	ForceClientPlaylistPtrInMemory();
