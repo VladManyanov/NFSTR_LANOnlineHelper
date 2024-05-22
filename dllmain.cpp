@@ -293,15 +293,15 @@ void ForceCareerStatePreLoad()
 	}
 }
 
-uintptr_t playlistLoaderRetPtr = 0x010383A2;
-__declspec(naked) void ForcePlaylistLoading_asmPart()
+uintptr_t playlistLoaderRetPtr = 0x0140016E;
+__declspec(naked) void ReplacePlaylistDefaultID_asmPart()
 {
 	_asm
 	{
+		mov EAX, dword ptr [ESI + 0xC] // Original Playlist Set loading
 		call LoadPlaylistMap
 		push customPlaylistPtr
-		pop EAX
-		mov dword ptr [ESI + 0x10], EAX // Save Playlist ptr on 0x027A3310
+		pop ECX // Load our Playlist instead of default one [EAX + 0x10]
 		jmp playlistLoaderRetPtr
 	}
 }
@@ -314,14 +314,15 @@ void ForceServerPlaylistLoading()
 	{
 		return;
 	}
+	// Force Playlist data to be loaded earlier than intended.
+	// As a consequence, first selected Route ID will be 2nd instead of 1st.
 	injector::MakeNOP(0x14011C8, 5);
 	injector::WriteMemory<uint8_t>(0x14011CF, 0x2, true);
 	injector::WriteMemory<uint8_t>(0x14011D1, 0xC, true);
 
-	// Set our Playlist ptr on specific place, to properly load resoures
-	injector::MakeNOP(0x103839D, 9);
-	injector::MakeJMP(0x103839D, ForcePlaylistLoading_asmPart);
-	injector::WriteMemory<uint32_t>(0x10383A2, EndianSwap(0x5EC20400), true);
+	// Replace Default Playlist with our custom one
+	injector::MakeNOP(0x1400168, 6);
+	injector::MakeJMP(0x1400168, ReplacePlaylistDefaultID_asmPart);
 }
 
 // Saves custom Session ID on Server boot.
@@ -448,6 +449,7 @@ void DisableAutologConnectAttempts()
 }
 
 // Due to ForcePlaylistLoading tweak, server will try to skip first event on boot.
+// TODO Find a better way
 void ResetPlaylistRouteIDTweak()
 {
 	if (ini.get(ServerCfg).get("ForcePlaylistLoading") == trueStr)
@@ -456,29 +458,18 @@ void ResetPlaylistRouteIDTweak()
 	}
 }
 
-auto Exe_ClientCareerSetObjectives = reinterpret_cast<void(__fastcall*)(int ptr)>(0x84A350);
-void ClientCareerSetObjectives()
+auto Exe_ClientCareerSetPlaylistData = reinterpret_cast<void(__thiscall*)(int careerPtr, int playlistPtr)>(0x84CEA0);
+// This method also loads Playlist Objectives as well
+void ClientCareerSetPlaylistData()
 {
-	Exe_ClientCareerSetObjectives(*(int*)clientCareerEntityPtr);
-}
-
-uintptr_t playlistPtrRetPtr = 0x0085DB9A;
-__declspec(naked) void ForcePlaylistPtrInMemory_asmPart()
-{
-	_asm
-	{
-		call LoadPlaylistMap
-		push customPlaylistPtr
-		pop ECX
-		mov dword ptr [EBP + 0x10], ECX // Set Playlist ptr on Client CareerMode info area
-		call ClientCareerSetObjectives // Now we must load Playlist Objectives
-		jmp playlistPtrRetPtr
-	}
+	LoadPlaylistMap();
+	uintptr_t customPlaylistGUIDPtr = customPlaylistPtr - 0x10;
+	Exe_ClientCareerSetPlaylistData(*(int*)clientCareerEntityPtr, customPlaylistGUIDPtr);
 }
 
 // Force Playlist pointer by default. Without it, Client instances will crash on Playlist mode loading.
-// Due to lack of working sync requests to load server Playlist, we force it manually.
-// Originally, clients gets this pointer by proceeding through Frontend menus.
+// Since original sync request to load server Playlist is not kicks in, we force it manually.
+// Originally, clients gets that pointers by proceeding through Frontend menus.
 void ForceClientPlaylistPtrInMemory()
 {
 	if (ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
@@ -488,7 +479,7 @@ void ForceClientPlaylistPtrInMemory()
 	injector::MakeNOP(0x1033DD5, 3); // Remove assignment to 0
 
 	injector::MakeNOP(0x85DB93, 7);
-	injector::MakeJMP(0x85DB93, ForcePlaylistPtrInMemory_asmPart);
+	injector::MakeCALL(0x85DB93, ClientCareerSetPlaylistData);
 	return;
 }
 
