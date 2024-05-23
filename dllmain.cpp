@@ -101,6 +101,26 @@ unsigned long StrHashToULong(std::string str)
 	return value;
 }
 
+void checkForMaxMinFloat(float value, float min, float max)
+{
+	if (value > max) {
+		value = max;
+	}
+	if (value < min) {
+		value = min;
+	}
+}
+
+void checkForMaxMinInt(int value, int min, int max)
+{
+	if (value > max) {
+		value = max;
+	}
+	if (value < min) {
+		value = min;
+	}
+}
+
 //
 
 // GUID takes 0x10 bytes, pointers refers on class after it.
@@ -321,17 +341,54 @@ void DisableSecondaryDrivingAssists()
 	// Disable RaceLineAssist states preparation
 	injector::WriteMemory<uint8_t>(0x181A35E, 0x84, true);
 	// Enable "Wallride Grief Protection" - it disables wheel control for 1 second after wall collision
-	injector::WriteMemory<uint8_t>(0x69B003, 0x74, true);
+	//injector::WriteMemory<uint8_t>(0x69B003, 0x74, true);
 }
 
 // Enhance drifting driving assists
 void EnhanceDriftAssists()
 {
-	if (ini.get(GameCfg).get("EnhanceDriftAssists") != trueStr)
+	if (ini.get(GameCfg).get("EnhanceDriftAssists") == trueStr)
+	{
+		injector::WriteMemory<uint8_t>(0x69AF4D, 0x75, true);
+	}
+}
+
+float customTrafficDensity;
+uintptr_t trafficDensityRetPtr = 0x125EEEE;
+__declspec(naked) void OverrideTrafficDensity_asmPart()
+{
+	_asm
+	{
+		movss XMM2, customTrafficDensity
+		jmp trafficDensityRetPtr
+	}
+}
+
+// Override Session Traffic settings
+// Note: on some routes and places, Traffic amount will be still controlled by specific track settings.
+void OverrideTrafficSettings()
+{
+	if (ini.get(ServerCfg).get("OverrideTrafficSettings") != trueStr)
 	{
 		return;
 	}
-	injector::WriteMemory<uint8_t>(0x69AF4D, 0x75, true);
+	customTrafficDensity = std::stof(ini.get(ServerCfg).get("CustomTrafficDensity"));
+	checkForMaxMinFloat(customTrafficDensity, 0.0, 1.0);
+	uint32_t customTrafficCarLimit = std::stoi(ini.get(ServerCfg).get("CustomTrafficCarLimit"));
+	// Game doesn't attempt to spawn more than 50 traffic cars, even without limit.
+	// Gameplay stability is not guaranteed after original 25 car limit.
+	checkForMaxMinInt(customTrafficCarLimit, 0, 50); 
+	
+	TestConsolePrint("### Loaded Traffic override Density: %f, Car Limit: %d.\n\n", 
+		customTrafficDensity, customTrafficCarLimit);
+
+	// Density
+	injector::MakeNOP(0x125EEE9, 5);
+	injector::MakeJMP(0x125EEE9, OverrideTrafficDensity_asmPart);
+
+	// Car Limit
+	injector::MakeNOP(0x125A9A0, 11); // Delete assignment and limit check (25)
+	injector::WriteMemory<uint8_t>(0x125A9AC, customTrafficCarLimit, true);
 }
 
 // Force Career Mode into PreLoad state. By default, server always starts with 0 (disabled Career Mode).
@@ -671,6 +728,7 @@ void InitServerPreLoadHelper()
 	ForceCareerStatePreLoad();
 	DisableSSLCertRequirement();
 	FixPlaylistSessionRandomizer();
+	OverrideTrafficSettings();
 }
 
 void InitClientThreadedHelper()
