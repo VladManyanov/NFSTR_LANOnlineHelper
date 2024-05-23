@@ -280,6 +280,59 @@ void EnableLANOnlineTweaks()
 		EnableAllCarsAssignment();
 	}
 }
+// Disable various driving assists #1
+void DisablePrimaryDrivingAssists()
+{
+	if (ini.get(GameCfg).get("DisablePrimaryDrivingAssists") != trueStr)
+	{
+		return;
+	}
+	// Disable AlignToRoad
+	injector::WriteMemory<uint8_t>(0x69B167, 0x74, true);
+	// Disable OverrideDriftIntent
+	injector::WriteMemory<uint8_t>(0x69B5E2, 0x75, true);
+	// Switch RaceLineAssist status to RaceLineAssist_Off
+	injector::WriteMemory<uint8_t>(0x1819984, 0x00, true);
+	// Skip RaceLineAssist calculation
+	injector::MakeNOP(0x18199A6, 6); 
+	injector::MakeJMP(0x18199A6, 0x1819CDC);
+	// Disables all RaceLineAssist forces
+	injector::WriteMemory<uint8_t>(0x1819AB2, 0x85, true);
+	// Disable Drifting Assists
+	injector::MakeNOP(0x181AA62, 7);
+	// Skip DriftIntents calculation
+	injector::MakeNOP(0x1828E73, 6);
+	injector::MakeJMP(0x1828E73, 0x18293A0);
+}
+
+// Disable various driving assists #2
+void DisableSecondaryDrivingAssists()
+{
+	if (ini.get(GameCfg).get("DisableSecondaryDrivingAssists") != trueStr)
+	{
+		return;
+	}
+	// Disable DriftIntentAnalyzer
+	injector::WriteMemory<uint8_t>(0x181A09C, 0x85, true);
+	// Disable RaceLineAnalyzer
+	injector::WriteMemory<uint8_t>(0x181A1EF, 0x75, true);
+	// Disable RaceCarExtraForces
+	injector::WriteMemory<uint8_t>(0x181A4D7, 0x74, true);
+	// Disable RaceLineAssist states preparation
+	injector::WriteMemory<uint8_t>(0x181A35E, 0x84, true);
+	// Enable "Wallride Grief Protection" - it disables wheel control for 1 second after wall collision
+	injector::WriteMemory<uint8_t>(0x69B003, 0x74, true);
+}
+
+// Enhance drifting driving assists
+void EnhanceDriftAssists()
+{
+	if (ini.get(GameCfg).get("EnhanceDriftAssists") != trueStr)
+	{
+		return;
+	}
+	injector::WriteMemory<uint8_t>(0x69AF4D, 0x75, true);
+}
 
 // Force Career Mode into PreLoad state. By default, server always starts with 0 (disabled Career Mode).
 void ForceCareerStatePreLoad()
@@ -600,18 +653,23 @@ void InitClientPreLoadHelper()
 	EnableDebugModeMenus();
 	ForceFastBoot();
 	ForceCustomInitFlow();
-	DisableWrongWayRespawn();
-	DisableOutOfTrackRespawn();
+
 	ClientComputerNameTweaks();
 	DisableAutologConnectAttempts();
 	ForceClientPlaylistPtrInMemory();
+	
+	DisableWrongWayRespawn();
+	DisableOutOfTrackRespawn();
+	DisablePrimaryDrivingAssists();
+	DisableSecondaryDrivingAssists();
+	EnhanceDriftAssists();
 }
 
 void InitServerPreLoadHelper()
 {
+	ForceServerPlaylistLoading();
 	ForceCareerStatePreLoad();
 	DisableSSLCertRequirement();
-	ForceServerPlaylistLoading();
 	FixPlaylistSessionRandomizer();
 }
 
