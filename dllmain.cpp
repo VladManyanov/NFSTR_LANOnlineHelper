@@ -580,6 +580,42 @@ void DisableAutologConnectAttempts()
 	}
 }
 
+uintptr_t forcePlayersCarRetPtr = 0x13EAFAE;
+uint32_t forcedCarHashInt;
+__declspec(naked) void ForcePlayersCar_asmPart()
+{
+	_asm
+	{
+		push forcedCarHashInt
+		pop EAX
+		jmp forcePlayersCarRetPtr
+	}
+}
+
+// Force a single car hash to all Clients. Changes being applied during Intermission screens.
+void ForcePlayersCar()
+{
+	std::string forcedCarHash = ini.get(ServerCfg).get("ForcePlayersCarHash");
+	if (forcedCarHash == falseStr)
+	{
+		return;
+	}
+	forcedCarHashInt = StrHashToULong(forcedCarHash);
+	TestConsolePrint("### ForcePlayersCarHash: %s\n\n", SWIntToHexStr(forcedCarHashInt).c_str());
+
+	injector::MakeNOP(0x13EAFA8, 6);
+	injector::MakeJMP(0x13EAFA8, ForcePlayersCar_asmPart);
+}
+
+// Disable Debug Car change attempts during events.
+void DisableDebugCarChangeInRace()
+{
+	if (ini.get(ServerCfg).get("DisableDebugCarChangeInRace") == trueStr)
+	{
+		injector::WriteMemory<uint8_t>(0x13CDC8C, 0xEB, true);
+	}
+}
+
 // Due to ForcePlaylistLoading tweak, server will try to skip first event on boot.
 // TODO Find a better way
 void ResetPlaylistRouteIDTweak()
@@ -613,6 +649,22 @@ void ForceClientPlaylistPtrInMemory()
 	injector::MakeNOP(0x85DB93, 7);
 	injector::MakeCALL(0x85DB93, ClientCareerSetPlaylistData);
 	return;
+}
+
+// Swap one of cars from Debug Car List, to your preferred vehicle by hash.
+// Effectively replaces stock "Aston Martin One-77" vehicle on the list.
+void ChangeDebugCarHash()
+{
+	std::string debugCarHash = ini.get(GameCfg).get("ChangeDebugCarHash");
+	if (debugCarHash == falseStr)
+	{
+		return;
+	}
+	uint32_t carHashInt = StrHashToULong(debugCarHash);
+	TestConsolePrint("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
+
+	// Prevent game crash and wait for Car List init
+	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
 }
 
 void WndTitlePlaylistStatus()
@@ -688,22 +740,6 @@ void WndTitleStatus()
 	
 }
 
-// Swap one of cars from Debug Car List, to your preferred vehicle by hash.
-// Effectively replaces stock "Aston Martin One-77" vehicle on the list.
-void ChangeDebugCarHash()
-{
-	std::string debugCarHash = ini.get(GameCfg).get("ChangeDebugCarHash");
-	if (debugCarHash == falseStr)
-	{
-		return;
-	}
-	uint32_t carHashInt = StrHashToULong(debugCarHash);
-	TestConsolePrint("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
-
-	// Prevent game crash and wait for Car List init
-	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
-}
-
 void InitClientPreLoadHelper()
 {
 	EnableLANOnlineTweaks();
@@ -725,6 +761,8 @@ void InitClientPreLoadHelper()
 void InitServerPreLoadHelper()
 {
 	ForceServerPlaylistLoading();
+	ForcePlayersCar();
+	DisableDebugCarChangeInRace();
 	ForceCareerStatePreLoad();
 	DisableSSLCertRequirement();
 	FixPlaylistSessionRandomizer();
