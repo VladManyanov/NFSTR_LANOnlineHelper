@@ -33,6 +33,8 @@ char* gameCurrentLevelStr = '\0';
 
 int PlaylistSetArrayID = 0;
 int PlaylistID = 0;
+uint32_t forcedGarageCarHash;
+uint32_t forcedServerCarHash;
 
 mINI::INIStructure ini;
 
@@ -580,31 +582,30 @@ void DisableAutologConnectAttempts()
 	}
 }
 
-uintptr_t forcePlayersCarRetPtr = 0x13EAFAE;
-uint32_t forcedCarHashInt;
-__declspec(naked) void ForcePlayersCar_asmPart()
+uintptr_t forceServerPlayersCarRetPtr = 0x13EAFAE;
+__declspec(naked) void ForceServerPlayersCar_asmPart()
 {
 	_asm
 	{
-		push forcedCarHashInt
+		push forcedServerCarHash
 		pop EAX
-		jmp forcePlayersCarRetPtr
+		jmp forceServerPlayersCarRetPtr
 	}
 }
 
 // Force a single car hash to all Clients. Changes being applied during Intermission screens.
-void ForcePlayersCar()
+void ForceServerPlayersCar()
 {
-	std::string forcedCarHash = ini.get(ServerCfg).get("ForcePlayersCarHash");
-	if (forcedCarHash == falseStr)
+	std::string forcedServerCarHashStr = ini.get(ServerCfg).get("ForceServerPlayersCarHash");
+	if (forcedServerCarHashStr == falseStr)
 	{
 		return;
 	}
-	forcedCarHashInt = StrHashToULong(forcedCarHash);
-	TestConsolePrint("### ForcePlayersCarHash: %s\n\n", SWIntToHexStr(forcedCarHashInt).c_str());
+	forcedServerCarHash = StrHashToULong(forcedServerCarHashStr);
+	TestConsolePrint("### ForceServerPlayersCarHash: %s\n\n", SWIntToHexStr(forcedServerCarHash).c_str());
 
 	injector::MakeNOP(0x13EAFA8, 6);
-	injector::MakeJMP(0x13EAFA8, ForcePlayersCar_asmPart);
+	injector::MakeJMP(0x13EAFA8, ForceServerPlayersCar_asmPart);
 }
 
 // Disable Debug Car change attempts during events.
@@ -651,20 +652,70 @@ void ForceClientPlaylistPtrInMemory()
 	return;
 }
 
-// Swap one of cars from Debug Car List, to your preferred vehicle by hash.
-// Effectively replaces stock "Aston Martin One-77" vehicle on the list.
-void ChangeDebugCarHash()
+uintptr_t forceGarageCarHashRetPtr1 = 0x897029;
+__declspec(naked) void ForceGarageCarHash_asmPart1()
 {
-	std::string debugCarHash = ini.get(GameCfg).get("ChangeDebugCarHash");
-	if (debugCarHash == falseStr)
+	_asm
+	{
+		push forcedGarageCarHash
+		pop EAX
+		mov dword ptr [ESI + 0xC], EAX
+		jmp forceGarageCarHashRetPtr1
+	}
+}
+
+uintptr_t forceGarageCarHashRetPtr2 = 0x896FF6;
+__declspec(naked) void ForceGarageCarHash_asmPart2()
+{
+	_asm
+	{
+		push forcedGarageCarHash
+		pop EAX
+		mov dword ptr [EDI + 0xC], EAX
+		jmp forceGarageCarHashRetPtr2
+	}
+}
+
+uintptr_t forceGarageCarHashRetPtr3 = 0x89E5F3;
+__declspec(naked) void ForceGarageCarHash_asmPart3()
+{
+	_asm
+	{
+		mov ESI, ECX // Original
+		push forcedGarageCarHash
+		pop EBX
+		mov dword ptr [ESI + 0x10], EBX
+		jmp forceGarageCarHashRetPtr3
+	}
+}
+
+// Force Garage vehicle to your preferred choice by hash. Any Garage car choice will be discarded.
+// Note: you must enter into View Cars menu at least once, to apply your car to Server.
+void ForceGarageCarHash()
+{
+	std::string garageCarHash = ini.get(GameCfg).get("ForceGarageCarHash");
+	if (garageCarHash == falseStr)
 	{
 		return;
 	}
-	uint32_t carHashInt = StrHashToULong(debugCarHash);
-	TestConsolePrint("### ChangeDebugCarHash: %s\n\n", SWIntToHexStr(carHashInt).c_str());
+	forcedGarageCarHash = StrHashToULong(garageCarHash);
+	TestConsolePrint("### ForceGarageCarHash: %s\n\n", SWIntToHexStr(forcedGarageCarHash).c_str());
 
-	// Prevent game crash and wait for Car List init
-	injector::WriteMemoryRaw(0xF3D313CC, &carHashInt, 4, true);
+	// Change initial Default car assignment #1
+	injector::MakeNOP(0x897024, 9);
+	injector::MakeJMP(0x897024, ForceGarageCarHash_asmPart1);
+	injector::WriteMemory<uint32_t>(0x897029, EndianSwap(0x5EC20800), true);
+
+	// Change initial Default car assignment #2
+	injector::MakeNOP(0x896FF1, 10);
+	injector::MakeJMP(0x896FF1, ForceGarageCarHash_asmPart2);
+	injector::WriteMemory<uint8_t>(0x896FE7, 0x0E, true);
+	injector::WriteMemory<uint8_t>(0x896FF6, 0x5F, true);
+	injector::WriteMemory<uint32_t>(0x896FF7, EndianSwap(0x5EC20800), true);
+
+	// Change Garage car choice assignment
+	injector::MakeNOP(0x89E5EE, 5);
+	injector::MakeJMP(0x89E5EE, ForceGarageCarHash_asmPart3);
 }
 
 void WndTitlePlaylistStatus()
@@ -750,6 +801,7 @@ void InitClientPreLoadHelper()
 	ClientComputerNameTweaks();
 	DisableAutologConnectAttempts();
 	ForceClientPlaylistPtrInMemory();
+	ForceGarageCarHash();
 	
 	DisableWrongWayRespawn();
 	DisableOutOfTrackRespawn();
@@ -761,7 +813,7 @@ void InitClientPreLoadHelper()
 void InitServerPreLoadHelper()
 {
 	ForceServerPlaylistLoading();
-	ForcePlayersCar();
+	ForceServerPlayersCar();
 	DisableDebugCarChangeInRace();
 	ForceCareerStatePreLoad();
 	DisableSSLCertRequirement();
@@ -771,8 +823,7 @@ void InitServerPreLoadHelper()
 
 void InitClientThreadedHelper()
 {
-	Sleep(4000); // TODO Find all pointers, or find another way
-	ChangeDebugCarHash();
+	Sleep(4000);
 	WndTitleStatus();
 }
 
