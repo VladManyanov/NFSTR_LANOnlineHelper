@@ -7,21 +7,15 @@
 #include "LANOnlineHelper.h"
 
 #include <thread>
+
 #include "includes/injector/injector.hpp"
 #include "includes/injector/assembly.hpp"
 #include "includes/mini/ini.h"
 #include "includes/patterns.hpp"
 
 //
-
-// mINI lib gives only strings, so...
-std::string trueStr = "1";
-std::string falseStr = "0";
-
-std::string GameCfg = "GameSettings";
-std::string OnlineCfg = "OnlineSettings";
-std::string ServerCfg = "ServerSettings";
-std::string PlaylistCfg = "PlaylistSettings";
+// Variables
+//
 
 bool IsClient = false;
 bool IsServer = false;
@@ -38,6 +32,8 @@ uint32_t forcedServerCarHash;
 
 mINI::INIStructure ini;
 
+//
+// Util
 //
 
 __declspec(naked) uint32_t EndianSwap(uint32_t value)
@@ -124,6 +120,8 @@ void checkForMaxMinInt(int value, int min, int max)
 }
 
 //
+// Structures
+//
 
 // GUID takes 0x10 bytes, pointers refers on class after it.
 // Usually Array Pointers contains sizes at -0x4 position.
@@ -193,6 +191,8 @@ mem::Client::OnlineEntity* onlineEnt;
 mem::Client::CareerEntity* careerEnt;
 
 //
+// Playlists
+//
 
 int GetPlaylistArrayConfigValue()
 {
@@ -209,8 +209,6 @@ int GetPlaylistIDConfigValue()
 	if (playlistID < 0) { playlistID = 0; }
 	return playlistID;
 }
-
-//
 
 uintptr_t playlistSet_ptr = 0x27A330C;
 uintptr_t customPlaylistPtr;
@@ -261,6 +259,8 @@ void LoadPlaylistMap()
 }
 
 //
+// Client
+//
 
 // Disable secure connections for any client/server backend.
 void DisableSSLCertRequirement()
@@ -294,14 +294,16 @@ void EnableAllCarsAssignment()
 
 void EnableLANOnlineTweaks()
 {
-	if (ini.get(OnlineCfg).get("EnableLANOnlineTweaks") == trueStr)
+	if (ini.get(OnlineCfg).get("EnableLANOnlineTweaks") != trueStr)
 	{
-		ForceSocketForClient();
-		SwapPlaylistSPMessage();
-		DisableSSLCertRequirement();
-		EnableAllCarsAssignment();
+		return;
 	}
+	ForceSocketForClient();
+	SwapPlaylistSPMessage();
+	DisableSSLCertRequirement();
+	EnableAllCarsAssignment();
 }
+
 // Disable various driving assists #1
 void DisablePrimaryDrivingAssists()
 {
@@ -353,146 +355,6 @@ void EnhanceDriftAssists()
 	{
 		injector::WriteMemory<uint8_t>(0x69AF4D, 0x75, true);
 	}
-}
-
-float customTrafficDensity;
-uintptr_t trafficDensityRetPtr = 0x125EEEE;
-__declspec(naked) void OverrideTrafficDensity_asmPart()
-{
-	_asm
-	{
-		movss XMM2, customTrafficDensity
-		jmp trafficDensityRetPtr
-	}
-}
-
-// Override Session Traffic settings
-// Note: on some routes and places, Traffic amount will be still controlled by specific track settings.
-void OverrideTrafficSettings()
-{
-	if (ini.get(ServerCfg).get("OverrideTrafficSettings") != trueStr)
-	{
-		return;
-	}
-	customTrafficDensity = std::stof(ini.get(ServerCfg).get("CustomTrafficDensity"));
-	checkForMaxMinFloat(customTrafficDensity, 0.0, 1.0);
-	uint32_t customTrafficCarLimit = std::stoi(ini.get(ServerCfg).get("CustomTrafficCarLimit"));
-	// Game doesn't attempt to spawn more than 50 traffic cars, even without limit.
-	// Gameplay stability is not guaranteed after original 25 car limit.
-	checkForMaxMinInt(customTrafficCarLimit, 0, 50); 
-	
-	TestConsolePrint("### Loaded Traffic override Density: %f, Car Limit: %d.\n\n", 
-		customTrafficDensity, customTrafficCarLimit);
-
-	// Density
-	injector::MakeNOP(0x125EEE9, 5);
-	injector::MakeJMP(0x125EEE9, OverrideTrafficDensity_asmPart);
-
-	// Car Limit
-	injector::MakeNOP(0x125A9A0, 11); // Delete assignment and limit check (25)
-	injector::WriteMemory<uint8_t>(0x125A9AC, customTrafficCarLimit, true);
-}
-
-// Force Career Mode into PreLoad state. By default, server always starts with 0 (disabled Career Mode).
-void ForceCareerStatePreLoad()
-{
-	if (ini.get(ServerCfg).get("ForceCareerStatePreLoad") == trueStr)
-	{
-		// Disable initial CareerState assignment to 0
-		injector::MakeNOP(0x1401BEF, 6);
-
-		injector::WriteMemory<uint8_t>(0x27A4370, 0x02, true);
-	}
-}
-
-uintptr_t playlistLoaderRetPtr = 0x0140016E;
-__declspec(naked) void ReplacePlaylistDefaultID_asmPart()
-{
-	_asm
-	{
-		mov EAX, dword ptr [ESI + 0xC] // Original Playlist Set loading
-		call LoadPlaylistMap
-		push customPlaylistPtr
-		pop ECX // Load our Playlist instead of default one [EAX + 0x10]
-		jmp playlistLoaderRetPtr
-	}
-}
-
-// This tweak makes possible to load Playlist data earlier than intended.
-// Without it and outside of Debug Playlist method, Ending Vote will cause server crash due to missing data.
-void ForceServerPlaylistLoading()
-{
-	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr)
-	{
-		return;
-	}
-	// Force Playlist data to be loaded earlier than intended.
-	// As a consequence, first selected Route ID will be 2nd instead of 1st.
-	injector::MakeNOP(0x14011C8, 5);
-	injector::WriteMemory<uint8_t>(0x14011CF, 0x2, true);
-	injector::WriteMemory<uint8_t>(0x14011D1, 0xC, true);
-
-	// Commands -NfsGame.FELevel AnyWordHereToBreakIt and -Game.DefaultLayerInclusion StartupMode=Game;GameMode=CareerMode
-	// allows to automatically boot Playlist data, but it breaks later on Intermission.
-
-	// Replace Default Playlist with our custom one
-	injector::MakeNOP(0x1400168, 6);
-	injector::MakeJMP(0x1400168, ReplacePlaylistDefaultID_asmPart);
-}
-
-// Saves custom Session ID on Server boot.
-void ForcePlaylistSession()
-{
-	if (ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == falseStr)
-	{
-		return;
-	}
-	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
-	uint32_t sessionID = StrToULong(sessionIDParam);
-	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
-	TestConsolePrint("### CSM_PlaylistSessionId: %d\n\n", sessionID);
-}
-
-// Disable any Playlist Session ID updates.
-// Ending Vote results also will be ignored, and the same session will be restarted.
-void DisablePlaylistSessionIDChanges()
-{
-	if (ini.get(ServerCfg).get("DisablePlaylistSessionIDChanges") == trueStr)
-	{
-		injector::MakeNOP(0x13FBE77, 3);
-	}
-}
-
-// TODO Not so safe to patch the code when running that code, make it differently
-void SaveRandomSessionId()
-{
-	uint8_t currentSessionId = *(BYTE*)0x027A3304;
-	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
-	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
-}
-
-uintptr_t fixPlaylistSessionRandomizerRetPtr = 0x13FFE49;
-__declspec(naked) void FixPlaylistSessionRandomizer_asmPart()
-{
-	_asm
-	{
-		mov dword ptr [ESI + 0x1084], 0x1 // Original
-		call SaveRandomSessionId
-		jmp fixPlaylistSessionRandomizerRetPtr
-	}
-}
-
-// Tweak some of safety-checks, to save first randomized Session ID.
-// Doesn't happen with "normal" game servers, but it's necessary to manually define it with our launch method.
-void FixPlaylistSessionRandomizer()
-{
-	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr
-		|| ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == trueStr)
-	{
-		return;
-	}
-	injector::MakeNOP(0x13FFE3F, 10);
-	injector::MakeJMP(0x13FFE3F, FixPlaylistSessionRandomizer_asmPart);
 }
 
 // Skips intro movies and sequence.
@@ -577,6 +439,242 @@ void DisableAutologConnectAttempts()
 	}
 }
 
+auto Exe_ClientCareerSetPlaylistData = reinterpret_cast<void(__thiscall*)(int careerPtr, int playlistPtr)>(0x84CEA0);
+// This method also loads Playlist Objectives as well
+void ClientCareerSetPlaylistData()
+{
+	LoadPlaylistMap();
+	uintptr_t customPlaylistGUIDPtr = customPlaylistPtr - 0x10;
+	Exe_ClientCareerSetPlaylistData(*(int*)clientCareerEntityPtr, customPlaylistGUIDPtr);
+}
+
+// Force Playlist pointer by default. Without it, Client instances will crash on Playlist mode loading.
+// Since original sync request to load server Playlist is not kicks in, we force it manually.
+// Originally, clients gets that pointers by proceeding through Frontend menus.
+void ForceClientPlaylistPtrInMemory()
+{
+	if (ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
+	{
+		return;
+	}
+	injector::MakeNOP(0x1033DD5, 3); // Remove assignment to 0
+
+	injector::MakeNOP(0x85DB93, 7);
+	injector::MakeCALL(0x85DB93, ClientCareerSetPlaylistData);
+	return;
+}
+
+uintptr_t forceGarageCarHashRetPtr1 = 0x897029;
+__declspec(naked) void ForceGarageCarHash_asmPart1()
+{
+	_asm
+	{
+		push forcedGarageCarHash
+		pop EAX
+		mov dword ptr[ESI + 0xC], EAX
+		jmp forceGarageCarHashRetPtr1
+	}
+}
+
+uintptr_t forceGarageCarHashRetPtr2 = 0x896FF6;
+__declspec(naked) void ForceGarageCarHash_asmPart2()
+{
+	_asm
+	{
+		push forcedGarageCarHash
+		pop EAX
+		mov dword ptr[EDI + 0xC], EAX
+		jmp forceGarageCarHashRetPtr2
+	}
+}
+
+uintptr_t forceGarageCarHashRetPtr3 = 0x89E5F3;
+__declspec(naked) void ForceGarageCarHash_asmPart3()
+{
+	_asm
+	{
+		mov ESI, ECX // Original
+		push forcedGarageCarHash
+		pop EBX
+		mov dword ptr[ESI + 0x10], EBX
+		jmp forceGarageCarHashRetPtr3
+	}
+}
+
+// Force Garage vehicle to your preferred choice by hash. Any Garage car choice will be discarded.
+// Note: you must enter into View Cars menu at least once, to apply your car to Server.
+void ForceGarageCarHash()
+{
+	std::string garageCarHash = ini.get(GameCfg).get("ForceGarageCarHash");
+	if (garageCarHash == falseStr)
+	{
+		return;
+	}
+	forcedGarageCarHash = StrHashToULong(garageCarHash);
+	TestConsolePrint("### ForceGarageCarHash: %s\n\n", SWIntToHexStr(forcedGarageCarHash).c_str());
+
+	// Change initial Default car assignment #1
+	injector::MakeNOP(0x897024, 9);
+	injector::MakeJMP(0x897024, ForceGarageCarHash_asmPart1);
+	injector::WriteMemory<uint32_t>(0x897029, EndianSwap(0x5EC20800), true);
+
+	// Change initial Default car assignment #2
+	injector::MakeNOP(0x896FF1, 10);
+	injector::MakeJMP(0x896FF1, ForceGarageCarHash_asmPart2);
+	injector::WriteMemory<uint8_t>(0x896FE7, 0x0E, true);
+	injector::WriteMemory<uint8_t>(0x896FF6, 0x5F, true);
+	injector::WriteMemory<uint32_t>(0x896FF7, EndianSwap(0x5EC20800), true);
+
+	// Change Garage car choice assignment
+	injector::MakeNOP(0x89E5EE, 5);
+	injector::MakeJMP(0x89E5EE, ForceGarageCarHash_asmPart3);
+}
+
+//
+// Server
+//
+
+float customTrafficDensity;
+uintptr_t trafficDensityRetPtr = 0x125EEEE;
+__declspec(naked) void OverrideTrafficDensity_asmPart()
+{
+	_asm
+	{
+		movss XMM2, customTrafficDensity
+		jmp trafficDensityRetPtr
+	}
+}
+
+// Override Session Traffic settings
+// Note: on some routes and places, Traffic amount will be still controlled by specific track settings.
+void OverrideTrafficSettings()
+{
+	if (ini.get(ServerCfg).get("OverrideTrafficSettings") != trueStr)
+	{
+		return;
+	}
+	customTrafficDensity = std::stof(ini.get(ServerCfg).get("CustomTrafficDensity"));
+	checkForMaxMinFloat(customTrafficDensity, 0.0, 1.0);
+
+	// Game doesn't attempt to spawn more than 50 traffic cars, even without limit.
+	// Gameplay stability is not guaranteed after original 25 car limit.
+	uint32_t customTrafficCarLimit = std::stoi(ini.get(ServerCfg).get("CustomTrafficCarLimit"));
+	checkForMaxMinInt(customTrafficCarLimit, 0, 50);
+
+	TestConsolePrint("### Loaded Traffic override Density: %f, Car Limit: %d.\n\n",
+		customTrafficDensity, customTrafficCarLimit);
+
+	// Density
+	injector::MakeNOP(0x125EEE9, 5);
+	injector::MakeJMP(0x125EEE9, OverrideTrafficDensity_asmPart);
+
+	// Car Limit
+	injector::MakeNOP(0x125A9A0, 11); // Delete assignment and limit check (25)
+	injector::WriteMemory<uint8_t>(0x125A9AC, customTrafficCarLimit, true);
+}
+
+// Force Career Mode into PreLoad state. By default, server always starts with 0 (disabled Career Mode).
+void ForceCareerStatePreLoad()
+{
+	if (ini.get(ServerCfg).get("ForceCareerStatePreLoad") == trueStr)
+	{
+		// Disable initial CareerState assignment to 0
+		injector::MakeNOP(0x1401BEF, 6);
+
+		injector::WriteMemory<uint8_t>(0x27A4370, 0x02, true);
+	}
+}
+
+uintptr_t playlistLoaderRetPtr = 0x0140016E;
+__declspec(naked) void ReplacePlaylistDefaultID_asmPart()
+{
+	_asm
+	{
+		mov EAX, dword ptr[ESI + 0xC] // Original Playlist Set loading
+		call LoadPlaylistMap
+		push customPlaylistPtr
+		pop ECX // Load our Playlist instead of default one [EAX + 0x10]
+		jmp playlistLoaderRetPtr
+	}
+}
+
+// This tweak makes possible to load Playlist data earlier than intended.
+// Without it and outside of Debug Playlist method, Ending Vote will cause server crash due to missing data.
+void ForceServerPlaylistLoading()
+{
+	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr)
+	{
+		return;
+	}
+	// Force Playlist data to be loaded earlier than intended.
+	// As a consequence, first selected Route ID will be 2nd instead of 1st.
+	injector::MakeNOP(0x14011C8, 5);
+	injector::WriteMemory<uint8_t>(0x14011CF, 0x2, true);
+	injector::WriteMemory<uint8_t>(0x14011D1, 0xC, true);
+
+	// Commands -NfsGame.FELevel AnyWordHereToBreakIt and -Game.DefaultLayerInclusion StartupMode=Game;GameMode=CareerMode
+	// allows to automatically boot Playlist data, but it breaks later on Intermission.
+
+	// Replace Default Playlist with our custom one
+	injector::MakeNOP(0x1400168, 6);
+	injector::MakeJMP(0x1400168, ReplacePlaylistDefaultID_asmPart);
+}
+
+// Saves custom Session ID on Server boot.
+void ForcePlaylistSession()
+{
+	if (ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == falseStr)
+	{
+		return;
+	}
+	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
+	uint32_t sessionID = StrToULong(sessionIDParam);
+	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
+	TestConsolePrint("### CSM_PlaylistSessionId: %d\n\n", sessionID);
+}
+
+// Disable any Playlist Session ID updates.
+// Ending Vote results also will be ignored, and the same session will be restarted.
+void DisablePlaylistSessionIDChanges()
+{
+	if (ini.get(ServerCfg).get("DisablePlaylistSessionIDChanges") == trueStr)
+	{
+		injector::MakeNOP(0x13FBE77, 3);
+	}
+}
+
+// TODO Not so safe to patch the code when running that code, make it differently
+void SaveRandomSessionId()
+{
+	uint8_t currentSessionId = *(BYTE*)0x027A3304;
+	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
+	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
+}
+
+uintptr_t fixPlaylistSessionRandomizerRetPtr = 0x13FFE49;
+__declspec(naked) void FixPlaylistSessionRandomizer_asmPart()
+{
+	_asm
+	{
+		mov dword ptr[ESI + 0x1084], 0x1 // Original
+		call SaveRandomSessionId
+		jmp fixPlaylistSessionRandomizerRetPtr
+	}
+}
+
+// Tweak some of safety-checks, to save first randomized Session ID.
+// Doesn't happen with "normal" game servers, but it's necessary to manually define it with our launch method.
+void FixPlaylistSessionRandomizer()
+{
+	if (ini.get(ServerCfg).get("ForcePlaylistLoading") != trueStr
+		|| ini.get(ServerCfg).get("ForceCustomPlaylistSessionFirstID") == trueStr)
+	{
+		return;
+	}
+	injector::MakeNOP(0x13FFE3F, 10);
+	injector::MakeJMP(0x13FFE3F, FixPlaylistSessionRandomizer_asmPart);
+}
+
 uintptr_t forceServerPlayersCarRetPtr = 0x13EAFAE;
 __declspec(naked) void ForceServerPlayersCar_asmPart()
 {
@@ -622,96 +720,9 @@ void ResetPlaylistRouteIDTweak()
 	}
 }
 
-auto Exe_ClientCareerSetPlaylistData = reinterpret_cast<void(__thiscall*)(int careerPtr, int playlistPtr)>(0x84CEA0);
-// This method also loads Playlist Objectives as well
-void ClientCareerSetPlaylistData()
-{
-	LoadPlaylistMap();
-	uintptr_t customPlaylistGUIDPtr = customPlaylistPtr - 0x10;
-	Exe_ClientCareerSetPlaylistData(*(int*)clientCareerEntityPtr, customPlaylistGUIDPtr);
-}
-
-// Force Playlist pointer by default. Without it, Client instances will crash on Playlist mode loading.
-// Since original sync request to load server Playlist is not kicks in, we force it manually.
-// Originally, clients gets that pointers by proceeding through Frontend menus.
-void ForceClientPlaylistPtrInMemory()
-{
-	if (ini.get(PlaylistCfg).get("ForceClientPlaylistPtrInMemory") == falseStr)
-	{
-		return;
-	}
-	injector::MakeNOP(0x1033DD5, 3); // Remove assignment to 0
-
-	injector::MakeNOP(0x85DB93, 7);
-	injector::MakeCALL(0x85DB93, ClientCareerSetPlaylistData);
-	return;
-}
-
-uintptr_t forceGarageCarHashRetPtr1 = 0x897029;
-__declspec(naked) void ForceGarageCarHash_asmPart1()
-{
-	_asm
-	{
-		push forcedGarageCarHash
-		pop EAX
-		mov dword ptr [ESI + 0xC], EAX
-		jmp forceGarageCarHashRetPtr1
-	}
-}
-
-uintptr_t forceGarageCarHashRetPtr2 = 0x896FF6;
-__declspec(naked) void ForceGarageCarHash_asmPart2()
-{
-	_asm
-	{
-		push forcedGarageCarHash
-		pop EAX
-		mov dword ptr [EDI + 0xC], EAX
-		jmp forceGarageCarHashRetPtr2
-	}
-}
-
-uintptr_t forceGarageCarHashRetPtr3 = 0x89E5F3;
-__declspec(naked) void ForceGarageCarHash_asmPart3()
-{
-	_asm
-	{
-		mov ESI, ECX // Original
-		push forcedGarageCarHash
-		pop EBX
-		mov dword ptr [ESI + 0x10], EBX
-		jmp forceGarageCarHashRetPtr3
-	}
-}
-
-// Force Garage vehicle to your preferred choice by hash. Any Garage car choice will be discarded.
-// Note: you must enter into View Cars menu at least once, to apply your car to Server.
-void ForceGarageCarHash()
-{
-	std::string garageCarHash = ini.get(GameCfg).get("ForceGarageCarHash");
-	if (garageCarHash == falseStr)
-	{
-		return;
-	}
-	forcedGarageCarHash = StrHashToULong(garageCarHash);
-	TestConsolePrint("### ForceGarageCarHash: %s\n\n", SWIntToHexStr(forcedGarageCarHash).c_str());
-
-	// Change initial Default car assignment #1
-	injector::MakeNOP(0x897024, 9);
-	injector::MakeJMP(0x897024, ForceGarageCarHash_asmPart1);
-	injector::WriteMemory<uint32_t>(0x897029, EndianSwap(0x5EC20800), true);
-
-	// Change initial Default car assignment #2
-	injector::MakeNOP(0x896FF1, 10);
-	injector::MakeJMP(0x896FF1, ForceGarageCarHash_asmPart2);
-	injector::WriteMemory<uint8_t>(0x896FE7, 0x0E, true);
-	injector::WriteMemory<uint8_t>(0x896FF6, 0x5F, true);
-	injector::WriteMemory<uint32_t>(0x896FF7, EndianSwap(0x5EC20800), true);
-
-	// Change Garage car choice assignment
-	injector::MakeNOP(0x89E5EE, 5);
-	injector::MakeJMP(0x89E5EE, ForceGarageCarHash_asmPart3);
-}
+//
+// Status data
+//
 
 void WndTitlePlaylistStatus()
 {
@@ -738,10 +749,7 @@ void WndTitleConnectionStatus()
 	{
 		return;
 	}
-	if (connectStatusId > sizeof(GameStatus::connectStatus) || connectStatusId < 0)
-	{
-		connectStatusId = 0;
-	}
+	checkForMaxMinInt(connectStatusId, 0, GameStatus::connectStatus.size());
 	TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
 	snprintf(wndTitle, 100, "%s%s", GameStatus::baseModTitle, GameStatus::connectStatus[connectStatusId].c_str());
 }
@@ -750,13 +758,16 @@ uintptr_t gameCurrentLevelPtr = 0x289BDC8;
 // Update Game window Title to display various information.
 void WndTitleStatus()
 {
-	if (ini.get(OnlineCfg).get("EnableWndTitleStatus") == falseStr)
+	if (ini.get(OnlineCfg).get("EnableWndTitleStatus") != trueStr)
 	{
 		return;
 	}
 	// Disable original title changes during connection attempts
 	injector::MakeNOP(0xE5FE52, 18); 
+
 	HWND hWnd = FindWindowA(gameName, gameName);
+	bool isOnlineEntityExists;
+	std::chrono::milliseconds wndTitleUpdateTimeMs(2000);
 
 	while (true)
 	{
@@ -764,7 +775,7 @@ void WndTitleStatus()
 		snprintf(wndTitle, 100, "%s", gameName);
 		
 		// On some cases, Online entity will be null
-		bool isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
+		isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
 		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
 		if (isOnlineEntityExists)
 		{
@@ -781,10 +792,13 @@ void WndTitleStatus()
 		{
 			SetWindowText(hWnd, wndTitle);
 		}
-		Sleep(2000);
+		std::this_thread::sleep_for(wndTitleUpdateTimeMs);
 	}
-	
 }
+
+//
+// Loading
+//
 
 void InitClientPreLoadHelper()
 {
@@ -818,13 +832,13 @@ void InitServerPreLoadHelper()
 
 void InitClientThreadedHelper()
 {
-	Sleep(4000);
+	std::this_thread::sleep_for(helperSleepMs);
 	WndTitleStatus();
 }
 
 void InitServerThreadedHelper()
 {
-	Sleep(4000); // TODO Works for now
+	std::this_thread::sleep_for(helperSleepMs); // TODO Works for now
 	ResetPlaylistRouteIDTweak();
 	ForcePlaylistSession();
 }
