@@ -463,6 +463,7 @@ void DisablePlaylistSessionIDChanges()
 	}
 }
 
+// TODO Not so safe to patch the code when running that code, make it differently
 void SaveRandomSessionId()
 {
 	uint8_t currentSessionId = *(BYTE*)0x027A3304;
@@ -470,13 +471,14 @@ void SaveRandomSessionId()
 	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
 }
 
-uintptr_t playlistSessionLoaderRetPtr = 0x013FFE4B;
+uintptr_t fixPlaylistSessionRandomizerRetPtr = 0x13FFE49;
 __declspec(naked) void FixPlaylistSessionRandomizer_asmPart()
 {
 	_asm
 	{
+		mov dword ptr [ESI + 0x1084], 0x1 // Original
 		call SaveRandomSessionId
-		jmp playlistSessionLoaderRetPtr
+		jmp fixPlaylistSessionRandomizerRetPtr
 	}
 }
 
@@ -489,15 +491,8 @@ void FixPlaylistSessionRandomizer()
 	{
 		return;
 	}
-	injector::MakeNOP(0x13FFE3F, 16);
-	injector::WriteMemory<uint32_t>(0x13FFE3F, EndianSwap(0xC6868410), true);
-
-	injector::WriteMemory<uint8_t>(0x13FFE43, 0x00, true);
-	injector::WriteMemory<uint8_t>(0x13FFE44, 0x00, true);
-	injector::WriteMemory<uint8_t>(0x13FFE45, 0x01, true);
-	
-	injector::MakeJMP(0x13FFE46, FixPlaylistSessionRandomizer_asmPart);
-	injector::WriteMemory<uint32_t>(0x13FFE4B, EndianSwap(0x5EC20400), true);
+	injector::MakeNOP(0x13FFE3F, 10);
+	injector::MakeJMP(0x13FFE3F, FixPlaylistSessionRandomizer_asmPart);
 }
 
 // Skips intro movies and sequence.
