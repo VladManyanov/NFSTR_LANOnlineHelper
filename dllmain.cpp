@@ -7,6 +7,7 @@
 #include "LANOnlineHelper.h"
 
 #include <thread>
+#include <random>
 
 #include "includes/injector/injector.hpp"
 #include "includes/injector/assembly.hpp"
@@ -23,13 +24,13 @@ bool TestConsole = false;
 
 char wndTitle[100];
 char wndTitleCopy[100];
-char* gameCurrentLevelStr = '\0';
+char* gameCurrentLevelStr;
 
 int PlaylistSetArrayID = 0;
 int PlaylistID = 0;
 uint32_t forcedGarageCarHash;
-uint32_t forcedServerCarHash;
 
+std::mt19937 rng;
 mINI::INIStructure ini;
 
 //
@@ -61,6 +62,7 @@ void StartTestConsole()
 }
 
 template<typename... Args>
+// Always use c_str() for any non-char string here
 void TestConsolePrint(const char* format, Args&&... args) {
 	if (TestConsole) {
 		std::printf(format, std::forward<Args>(args)...);
@@ -99,7 +101,7 @@ unsigned long StrHashToULong(std::string str)
 	return value;
 }
 
-void checkForMaxMinFloat(float value, float min, float max)
+void CheckForMaxMinFloat(float value, float min, float max)
 {
 	if (value > max) {
 		value = max;
@@ -109,7 +111,7 @@ void checkForMaxMinFloat(float value, float min, float max)
 	}
 }
 
-void checkForMaxMinInt(int value, int min, int max)
+void CheckForMaxMinInt(int value, int min, int max)
 {
 	if (value > max) {
 		value = max;
@@ -117,6 +119,31 @@ void checkForMaxMinInt(int value, int min, int max)
 	if (value < min) {
 		value = min;
 	}
+}
+
+std::vector<std::string> SplitStr(const std::string& str, char delimiter) {
+	std::vector<std::string> tokens;
+	std::string token;
+	std::istringstream tokenStream(str);
+	while (getline(tokenStream, token, delimiter)) {
+		tokens.push_back(token);
+	}
+	return tokens;
+}
+
+inline std::string ConcatStrVec(std::vector<std::string> vec, char delimiter) {
+	std::string out = vec[0];
+	for (unsigned int i = 1; i < vec.size(); i++) {
+		out += delimiter + vec[i];
+	}
+	return out;
+}
+
+void InitRandomGen()
+{
+	std::mt19937 rngTmp(
+		(unsigned int)std::chrono::steady_clock::now().time_since_epoch().count());
+	rng = rngTmp;
 }
 
 //
@@ -156,6 +183,7 @@ namespace ebx
 
 uintptr_t clientOnlineEntityPtr = 0x2888F7C;
 uintptr_t clientCareerEntityPtr = 0x28823BC;
+uintptr_t serverCareerEntityPtr = 0x27A3300;
 namespace mem
 {
 	namespace Client
@@ -186,9 +214,47 @@ namespace mem
 			uint32_t PListObjectivesValue;	// 0x1E8
 		};
 	}
+	namespace Server
+	{
+		class CareerEntity {
+		public:
+			char EntityHeaderPart[4];			// 0x00
+			uint32_t PlaylistSessionId;			// 0x04
+			uint32_t PlaylistRouteId;			// 0x08
+			uintptr_t PlaylistSet;				// 0x0C
+			uintptr_t CurrentPlaylist;			// 0x10
+			char _VarData1[32];					// 0x14
+			uint32_t PlayerCount;				// 0x34
+			char _VarData2[4152];				// 0x38
+			uint32_t CareerState;				// 0x1070
+			float CareerStateTimer;				// 0x1074
+			char _VarData3[8];					// 0x1078
+			uint32_t PlaylistSessionsCount;		// 0x1080
+			// And more unknown data
+		};
+	}
 }
+
+mem::Server::CareerEntity* serverCareerEnt;
+
 mem::Client::OnlineEntity* onlineEnt;
-mem::Client::CareerEntity* careerEnt;
+// This pointer could be null sometimes, during connection attempts
+// Also this pointer always being present during single-player
+bool IsOnlineEntityExists()
+{
+	bool idk = *(int*)clientOnlineEntityPtr != 0;
+	if (idk)
+	{
+		onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
+	}
+	return idk;
+}
+
+mem::Client::CareerEntity* clientCareerEnt;
+void UpdateClientCareerEntityPtr()
+{
+	clientCareerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
+}
 
 //
 // Playlists
@@ -210,12 +276,11 @@ int GetPlaylistIDConfigValue()
 	return playlistID;
 }
 
-uintptr_t playlistSet_ptr = 0x27A330C;
 uintptr_t customPlaylistPtr;
 // Get PlaylistSet to find our specified Playlist pointer.
-void LoadPlaylistMap()
+void LoadPlaylistMap(uintptr_t setPtr)
 {
-	ebx::playlists::PlaylistSet* playlistSet = *(ebx::playlists::PlaylistSet**)playlistSet_ptr;
+	ebx::playlists::PlaylistSet* playlistSet = (ebx::playlists::PlaylistSet*)setPtr;
 	ebx::playlists::PlaylistGroupArray groupArray { };
 
 	groupArray.count = *(int*)(playlistSet->ar_PlaylistGroups - 0x4);
@@ -256,6 +321,15 @@ void LoadPlaylistMap()
 		printf("### Career_PlaylistSet size: %d\n", groupArray.count);
 		printf("### Career_PlaylistPtr: %s\n\n", PtrToHexStr(customPlaylistPtr).c_str());
 	}
+}
+void LoadPlaylistMapServer()
+{
+	LoadPlaylistMap(serverCareerEnt->PlaylistSet);
+}
+void LoadPlaylistMapClient()
+{
+	UpdateClientCareerEntityPtr();
+	LoadPlaylistMap(clientCareerEnt->PlaylistSet);
 }
 
 //
@@ -443,7 +517,7 @@ auto Exe_ClientCareerSetPlaylistData = reinterpret_cast<void(__thiscall*)(int ca
 // This method also loads Playlist Objectives as well
 void ClientCareerSetPlaylistData()
 {
-	LoadPlaylistMap();
+	LoadPlaylistMapClient(); 
 	uintptr_t customPlaylistGUIDPtr = customPlaylistPtr - 0x10;
 	Exe_ClientCareerSetPlaylistData(*(int*)clientCareerEntityPtr, customPlaylistGUIDPtr);
 }
@@ -554,12 +628,12 @@ void OverrideTrafficSettings()
 		return;
 	}
 	customTrafficDensity = std::stof(ini.get(ServerCfg).get("CustomTrafficDensity"));
-	checkForMaxMinFloat(customTrafficDensity, 0.0, 1.0);
+	CheckForMaxMinFloat(customTrafficDensity, 0.0, 1.0);
 
 	// Game doesn't attempt to spawn more than 50 traffic cars, even without limit.
 	// Gameplay stability is not guaranteed after original 25 car limit.
 	uint32_t customTrafficCarLimit = std::stoi(ini.get(ServerCfg).get("CustomTrafficCarLimit"));
-	checkForMaxMinInt(customTrafficCarLimit, 0, 50);
+	CheckForMaxMinInt(customTrafficCarLimit, 0, 50);
 
 	TestConsolePrint("### Loaded Traffic override Density: %f, Car Limit: %d.\n\n",
 		customTrafficDensity, customTrafficCarLimit);
@@ -581,7 +655,7 @@ void ForceCareerStatePreLoad()
 		// Disable initial CareerState assignment to 0
 		injector::MakeNOP(0x1401BEF, 6);
 
-		injector::WriteMemory<uint8_t>(0x27A4370, 0x02, true);
+		serverCareerEnt->CareerState = 0x2;
 	}
 }
 
@@ -591,7 +665,7 @@ __declspec(naked) void ReplacePlaylistDefaultID_asmPart()
 	_asm
 	{
 		mov EAX, dword ptr[ESI + 0xC] // Original Playlist Set loading
-		call LoadPlaylistMap
+		call LoadPlaylistMapServer
 		push customPlaylistPtr
 		pop ECX // Load our Playlist instead of default one [EAX + 0x10]
 		jmp playlistLoaderRetPtr
@@ -629,8 +703,8 @@ void ForcePlaylistSession()
 	}
 	std::string sessionIDParam = ini.get(ServerCfg).get("PlaylistSessionID");
 	uint32_t sessionID = StrToULong(sessionIDParam);
-	injector::WriteMemory<uint8_t>(0x27A3304, sessionID, false);
-	TestConsolePrint("### CSM_PlaylistSessionId: %d\n\n", sessionID);
+	serverCareerEnt->PlaylistSessionId = sessionID;
+	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", serverCareerEnt->PlaylistSessionId);
 }
 
 // Disable any Playlist Session ID updates.
@@ -646,9 +720,8 @@ void DisablePlaylistSessionIDChanges()
 // TODO Not so safe to patch the code when running that code, make it differently
 void SaveRandomSessionId()
 {
-	uint8_t currentSessionId = *(BYTE*)0x027A3304;
-	injector::WriteMemory<uint8_t>(0x01400182, currentSessionId, true);
-	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", currentSessionId);
+	injector::WriteMemory<uint8_t>(0x01400182, serverCareerEnt->PlaylistSessionId, true);
+	TestConsolePrint("### Career_PlaylistSessionId: %d\n\n", serverCareerEnt->PlaylistSessionId);
 }
 
 uintptr_t fixPlaylistSessionRandomizerRetPtr = 0x13FFE49;
@@ -675,18 +748,36 @@ void FixPlaylistSessionRandomizer()
 	injector::MakeJMP(0x13FFE3F, FixPlaylistSessionRandomizer_asmPart);
 }
 
+std::vector<uint32_t> forcedServerCarHashes;
+bool isSingleServerCarHash = false;
+uint32_t pickedServerCarHash;
+std::uniform_int_distribution<int> carPickRandRegion;
+// TODO Currently, it will change players cars every race, instead of every Session.
+// Player ID connections must be found first
+void GetRandomServerCarHash()
+{
+	if (!isSingleServerCarHash)
+	{
+		// This function executes twice for each player (Car Select + PreRace stages)
+		int randomIndex = carPickRandRegion(rng);
+		pickedServerCarHash = forcedServerCarHashes[randomIndex];
+	}
+}
+
 uintptr_t forceServerPlayersCarRetPtr = 0x13EAFAE;
 __declspec(naked) void ForceServerPlayersCar_asmPart()
 {
 	_asm
 	{
-		push forcedServerCarHash
+		call GetRandomServerCarHash
+		push pickedServerCarHash
 		pop EAX
 		jmp forceServerPlayersCarRetPtr
 	}
 }
 
-// Force a single car hash to all Clients. Changes being applied during Intermission screens.
+// Force user-specified car hashes to all Clients. Changes being applied during Intermission screens.
+// More than 1 car hash will be forced to players by random.
 void ForceServerPlayersCar()
 {
 	std::string forcedServerCarHashStr = ini.get(ServerCfg).get("ForceServerPlayersCarHash");
@@ -694,8 +785,26 @@ void ForceServerPlayersCar()
 	{
 		return;
 	}
-	forcedServerCarHash = StrHashToULong(forcedServerCarHashStr);
-	TestConsolePrint("### ForceServerPlayersCarHash: %s\n\n", SWIntToHexStr(forcedServerCarHash).c_str());
+	std::vector<std::string> forcedServerCarHashArray = SplitStr(forcedServerCarHashStr, ',');
+	for (unsigned int i = 0; i < forcedServerCarHashArray.size(); i++)
+	{
+		uint32_t carHashInt = StrHashToULong(forcedServerCarHashArray[i]);
+		forcedServerCarHashes.push_back(carHashInt);
+	}
+
+	TestConsolePrint("### ForceServerPlayersCarHashes: %s\n\n", 
+		ConcatStrVec(forcedServerCarHashArray, ',').c_str());
+	if (forcedServerCarHashes.size() < 2)
+	{
+		isSingleServerCarHash = true;
+		pickedServerCarHash = forcedServerCarHashes[0];
+	}
+	else
+	{
+		InitRandomGen();
+		std::uniform_int_distribution<int> carPickRandRegionTmp(0, forcedServerCarHashes.size() - 1);
+		carPickRandRegion = carPickRandRegionTmp;
+	}
 
 	injector::MakeNOP(0x13EAFA8, 6);
 	injector::MakeJMP(0x13EAFA8, ForceServerPlayersCar_asmPart);
@@ -716,7 +825,7 @@ void ResetPlaylistRouteIDTweak()
 {
 	if (ini.get(ServerCfg).get("ForcePlaylistLoading") == trueStr)
 	{
-		injector::WriteMemory<uint32_t>(0x27A3308, 0xFFFFFFFF, false);
+		serverCareerEnt->PlaylistRouteId = 0xFFFFFFFF;
 	}
 }
 
@@ -732,12 +841,11 @@ void WndTitlePlaylistStatus()
 	{
 		return;
 	}
-	careerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
 	//TestConsolePrint("### careerEnt PlaylistSessionId: %d\n", careerEnt->PlaylistSessionId);
 	//TestConsolePrint("### careerEnt PlaylistRouteId: %d\n\n", careerEnt->PlaylistRouteId);
 	snprintf(wndTitle, 100, "%sPlaylist A%d #%d | Session: %d, Race: %d",
 		GameStatus::baseModTitle, PlaylistSetArrayID, PlaylistID,
-		careerEnt->PlaylistSessionId, careerEnt->PlaylistRouteId + 1);
+		clientCareerEnt->PlaylistSessionId, clientCareerEnt->PlaylistRouteId + 1);
 }
 
 void WndTitleConnectionStatus()
@@ -749,7 +857,7 @@ void WndTitleConnectionStatus()
 	{
 		return;
 	}
-	checkForMaxMinInt(connectStatusId, 0, GameStatus::connectStatus.size());
+	CheckForMaxMinInt(connectStatusId, 0, GameStatus::connectStatus.size());
 	TestConsolePrint("### connectStatusId: %s\n\n", PtrToHexStr(connectStatusId).c_str());
 	snprintf(wndTitle, 100, "%s%s", GameStatus::baseModTitle, GameStatus::connectStatus[connectStatusId].c_str());
 }
@@ -758,15 +866,18 @@ uintptr_t gameCurrentLevelPtr = 0x289BDC8;
 // Update Game window Title to display various information.
 void WndTitleStatus()
 {
-	if (ini.get(OnlineCfg).get("EnableWndTitleStatus") != trueStr)
+	if (ini.get(OnlineCfg).get("EnableWndTitleStatus") != trueStr ||
+		(IsOnlineEntityExists() && onlineEnt->IsSinglePlayer == 1) )
 	{
-		return;
+		return; // Disable title updates on single-player
 	}
+	
 	// Disable original title changes during connection attempts
 	injector::MakeNOP(0xE5FE52, 18); 
 
+	UpdateClientCareerEntityPtr();
+
 	HWND hWnd = FindWindowA(gameName, gameName);
-	bool isOnlineEntityExists;
 	std::chrono::milliseconds wndTitleUpdateTimeMs(2000);
 
 	while (true)
@@ -774,19 +885,13 @@ void WndTitleStatus()
 		snprintf(wndTitleCopy, 100, "%s", wndTitle);
 		snprintf(wndTitle, 100, "%s", gameName);
 		
-		// On some cases, Online entity will be null
-		isOnlineEntityExists = *(int*)clientOnlineEntityPtr != 0;
-		TestConsolePrint("### ClientOnlineEntity Ptr: %s\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
-		if (isOnlineEntityExists)
+		//TestConsolePrint("### ClientOnlineEntity Ptr: %s\n", PtrToHexStr(*(int*)clientOnlineEntityPtr).c_str());
+		if (IsOnlineEntityExists() && onlineEnt->IsSinglePlayer == 0)
 		{
-			onlineEnt = *(mem::Client::OnlineEntity**)clientOnlineEntityPtr;
-			if (onlineEnt->IsSinglePlayer == 0)
-			{
-				gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
-				TestConsolePrint("### GameCurrentLevel: %s\n", gameCurrentLevelStr);
-				WndTitleConnectionStatus();
-				WndTitlePlaylistStatus();
-			}
+			gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
+			TestConsolePrint("### GameCurrentLevel: %s\n", gameCurrentLevelStr);
+			WndTitleConnectionStatus();
+			WndTitlePlaylistStatus();
 		}
 		if (strcmp(wndTitle, wndTitleCopy) != 0)
 		{
@@ -821,6 +926,7 @@ void InitClientPreLoadHelper()
 
 void InitServerPreLoadHelper()
 {
+	serverCareerEnt = (mem::Server::CareerEntity*)serverCareerEntityPtr;
 	ForceServerPlaylistLoading();
 	ForceServerPlayersCar();
 	DisableDebugCarChangeInRace();
