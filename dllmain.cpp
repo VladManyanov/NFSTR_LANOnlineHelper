@@ -366,6 +366,16 @@ void EnableAllCarsAssignment()
 	injector::MakeNOP(0x8848F5, 13);
 }
 
+// Pause state tricks to allow returning on FrontEnd level
+void ModifyPlayerPauseState()
+{
+	// Force Single-Player state on one specific place, required to allow players use Quit option
+	injector::WriteMemory<uint8_t>(0x926EE7, 0xB8, true);
+	injector::WriteMemory<uint32_t>(0x926EE8, EndianSwap(0x01000000), true);
+	// Replace True with False word: it will disable Game Time stop during pause
+	injector::WriteMemory<uint32_t>(0xEC0572, EndianSwap(0xD00E3F02), true);
+}
+
 void EnableLANOnlineTweaks()
 {
 	if (ini.get(OnlineCfg).get("EnableLANOnlineTweaks") != trueStr)
@@ -376,6 +386,7 @@ void EnableLANOnlineTweaks()
 	SwapPlaylistSPMessage();
 	DisableSSLCertRequirement();
 	EnableAllCarsAssignment();
+	ModifyPlayerPauseState();
 }
 
 // Disable various driving assists #1
@@ -522,6 +533,18 @@ void ClientCareerSetPlaylistData()
 	Exe_ClientCareerSetPlaylistData(*(int*)clientCareerEntityPtr, customPlaylistGUIDPtr);
 }
 
+uintptr_t forceClientPlaylistAfterResetRetPtr = 0x84AB1C;
+__declspec(naked) void ForceClientPlaylistAfterReset_asmPart()
+{
+	_asm
+	{
+		mov EAX, dword ptr [EDX + 0x18] // Original
+		call EAX // Original, Call 0x850A20 (Reset ClientCareerEntity)
+		call ClientCareerSetPlaylistData
+		jmp forceClientPlaylistAfterResetRetPtr
+	}
+}
+
 // Force Playlist pointer by default. Without it, Client instances will crash on Playlist mode loading.
 // Since original sync request to load server Playlist is not kicks in, we force it manually.
 // Originally, clients gets that pointers by proceeding through Frontend menus.
@@ -535,6 +558,10 @@ void ForceClientPlaylistPtrInMemory()
 
 	injector::MakeNOP(0x85DB93, 7);
 	injector::MakeCALL(0x85DB93, ClientCareerSetPlaylistData);
+
+	// Load Playlist & Objectives data again after Entity reset, during entering FrontEnd from Pause menu
+	injector::MakeNOP(0x84AB17, 5);
+	injector::MakeJMP(0x84AB17, ForceClientPlaylistAfterReset_asmPart);
 	return;
 }
 
@@ -607,6 +634,25 @@ void ForceGarageCarHash()
 //
 // Server
 //
+
+void ExperimentalSinglePlayerCoopTweaks()
+{
+	if (ini.get(ServerCfg).get("ExperimentalSinglePlayerCoopTweaks") != trueStr)
+	{
+		return;
+	}
+	// Enable AI spawning on Multiplayer mode
+	// Depends on 027A4F73 = 1, which is usually always enabled
+	// Doesn't work for Online Playlists, due to missing network messages
+	injector::MakeNOP(0x013230FA, 6);
+	injector::WriteMemory<uint8_t>(0x27A8253, 0x1, true);
+
+	// Avoid server-logic crash when Cops appear
+	injector::WriteMemory<uint8_t>(0x125482A, 0x31, true);
+	injector::WriteMemory<uint8_t>(0x125482B, 0xC0, true);
+	injector::WriteMemory<uint8_t>(0x125482C, 0x90, true);
+
+}
 
 float customTrafficDensity;
 uintptr_t trafficDensityRetPtr = 0x125EEEE;
@@ -934,6 +980,7 @@ void InitServerPreLoadHelper()
 	DisableSSLCertRequirement();
 	FixPlaylistSessionRandomizer();
 	OverrideTrafficSettings();
+	ExperimentalSinglePlayerCoopTweaks();
 }
 
 void InitClientThreadedHelper()
@@ -947,6 +994,8 @@ void InitServerThreadedHelper()
 	std::this_thread::sleep_for(helperSleepMs); // TODO Works for now
 	ResetPlaylistRouteIDTweak();
 	ForcePlaylistSession();
+	std::this_thread::sleep_for((std::chrono::milliseconds)10000);
+	//Test();
 }
 
 // Apply tweaks, depending on the type of game executable.
