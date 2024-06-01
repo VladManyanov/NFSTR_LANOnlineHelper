@@ -256,6 +256,8 @@ void UpdateClientCareerEntityPtr()
 	clientCareerEnt = *(mem::Client::CareerEntity**)clientCareerEntityPtr;
 }
 
+uintptr_t gameCurrentLevelPtr = 0x289BDC8;
+
 //
 // Playlists
 //
@@ -693,16 +695,50 @@ void OverrideTrafficSettings()
 	injector::WriteMemory<uint8_t>(0x125A9AC, customTrafficCarLimit, true);
 }
 
+// TODO Not ideal, any Client can force FrontEnd return by wish
+void CheckForFrontEndLevelLoading()
+{
+	gameCurrentLevelStr = (char*)gameCurrentLevelPtr;
+	if (strcmp(gameCurrentLevelStr, frontendLevel) == 0)
+	{
+		serverCareerEnt->CareerState = 0x2;
+		serverCareerEnt->CareerStateTimer = 0.0;
+		serverCareerEnt->PlaylistRouteId = 0xFFFFFFFF;
+		TestConsolePrint("### Entered on FrontEnd level, CareerState is restarted.\n\n");
+	}
+}
+
+uintptr_t checkForFrontEndLevelLoadingRetPtr = 0x11A46B9;
+__declspec(naked) void CheckForFrontEndLevelLoading_asmPart()
+{
+	_asm
+	{
+		push EAX
+		push ECX
+		call CheckForFrontEndLevelLoading
+		pop ECX
+		pop EAX
+		mov EDX, 0x289BCC8 // Original
+		jmp checkForFrontEndLevelLoadingRetPtr
+	}
+}
+
 // Force Career Mode into PreLoad state. By default, server always starts with 0 (disabled Career Mode).
 void ForceCareerStatePreLoad()
 {
-	if (ini.get(ServerCfg).get("ForceCareerStatePreLoad") == trueStr)
+	if (ini.get(ServerCfg).get("ForceCareerStatePreLoad") != trueStr)
 	{
-		// Disable initial CareerState assignment to 0
-		injector::MakeNOP(0x1401BEF, 6);
-
-		serverCareerEnt->CareerState = 0x2;
+		return;
 	}
+	// Disable initial CareerState assignment to 0
+	injector::MakeNOP(0x1401BEF, 6);
+
+	// Useful if Server loads on level different than FrontEnd
+	serverCareerEnt->CareerState = 0x2; 
+
+	// Check for FrontEnd level loading
+	injector::MakeNOP(0x11A46B4, 5);
+	injector::MakeJMP(0x11A46B4, CheckForFrontEndLevelLoading_asmPart);
 }
 
 uintptr_t playlistLoaderRetPtr = 0x0140016E;
@@ -908,7 +944,6 @@ void WndTitleConnectionStatus()
 	snprintf(wndTitle, 100, "%s%s", GameStatus::baseModTitle, GameStatus::connectStatus[connectStatusId].c_str());
 }
 
-uintptr_t gameCurrentLevelPtr = 0x289BDC8;
 // Update Game window Title to display various information.
 void WndTitleStatus()
 {
