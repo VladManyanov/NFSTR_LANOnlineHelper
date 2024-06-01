@@ -23,6 +23,6 @@ std::chrono::milliseconds helperSleepMs(4000);
 namespace GameStatus
 {
 	const char baseModTitle[] = "NFSTR LANs: ";
-	std::vector<std::string> connectStatus = { "Disconnected", "Pending Connection", "Attempting to Connect...", "Connected", "Disconnecting..." };
-	const char onlineEntityNotAvailable[] = "Offline";
+	std::vector<std::string> connectStatus = 
+		{ "Disconnected", "Pending Connection", "Attempting to Connect...", "Connected", "Disconnecting..." };
 }

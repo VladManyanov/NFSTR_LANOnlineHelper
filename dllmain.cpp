@@ -994,8 +994,6 @@ void InitServerThreadedHelper()
 	std::this_thread::sleep_for(helperSleepMs); // TODO Works for now
 	ResetPlaylistRouteIDTweak();
 	ForcePlaylistSession();
-	std::this_thread::sleep_for((std::chrono::milliseconds)10000);
-	//Test();
 }
 
 // Apply tweaks, depending on the type of game executable.
