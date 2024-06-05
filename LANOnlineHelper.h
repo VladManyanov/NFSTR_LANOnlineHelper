@@ -19,6 +19,7 @@ std::string trueStr = "1";
 std::string falseStr = "0";
 
 std::chrono::milliseconds helperSleepMs(4000);
+std::chrono::milliseconds wndTitleUpdateTimeMs(2000);
 
 namespace GameStatus
 {

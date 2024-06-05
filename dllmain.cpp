@@ -29,6 +29,7 @@ char* gameCurrentLevelStr;
 int PlaylistSetArrayID = 0;
 int PlaylistID = 0;
 uint32_t forcedGarageCarHash;
+char langCode[] = "en_Us";
 
 std::mt19937 rng;
 mINI::INIStructure ini;
@@ -212,6 +213,18 @@ namespace mem
 			uint32_t CareerState;			// 0x1D8
 			char _VarData2[12];				// 0x1DC
 			uint32_t PListObjectivesValue;	// 0x1E8
+		};
+
+		class RoutePlayerEntity {
+		public:
+			char _VarData1[16];				// 0x00
+			uint32_t PlayerID;				// 0x10
+			uint32_t IsAI;					// 0x14
+			uint32_t State1;				// 0x18
+			uint32_t State2;				// 0x1C
+			uint32_t RacePlace;				// 0x20
+			float RoutePercentPassed;		// 0x24
+			float RouteMetersPassed;		// 0x28
 		};
 	}
 	namespace Server
@@ -633,6 +646,29 @@ void ForceGarageCarHash()
 	injector::MakeJMP(0x89E5EE, ForceGarageCarHash_asmPart3);
 }
 
+uintptr_t gameLanguage = 0x273DF70;
+auto Exe_PickGameLanguage = reinterpret_cast<int(*)(char* langCodePtr)>(0x1887CC0);
+void SetGameLanguage_InGamePart()
+{
+	uint32_t langId = Exe_PickGameLanguage(langCode);
+	injector::WriteMemory<uint32_t>(gameLanguage, langId, true);
+}
+
+// Set game Language without Registry values.
+void SetGameLanguage()
+{
+	std::string langCodeStr = ini.get(GameCfg).get("SetGameLanguage");
+	if (langCodeStr == falseStr)
+	{
+		return;
+	}
+	strcpy(langCode, langCodeStr.c_str());
+	injector::MakeNOP(0x1897A2E, 5); // Disable one of assignments
+	injector::MakeCALL(0x1890DF0, SetGameLanguage_InGamePart);
+	injector::MakeCALL(0x1897A22, SetGameLanguage_InGamePart);
+	TestConsolePrint("### Selected config Language: %s\n", langCode);
+}
+
 //
 // Server
 //
@@ -952,14 +988,17 @@ void WndTitleStatus()
 	{
 		return; // Disable title updates on single-player
 	}
-	
 	// Disable original title changes during connection attempts
 	injector::MakeNOP(0xE5FE52, 18); 
 
 	UpdateClientCareerEntityPtr();
 
 	HWND hWnd = FindWindowA(gameName, gameName);
-	std::chrono::milliseconds wndTitleUpdateTimeMs(2000);
+	while (hWnd == 0)
+	{
+		std::this_thread::sleep_for(wndTitleUpdateTimeMs);
+		hWnd = FindWindowA(gameName, gameName);
+	}
 
 	while (true)
 	{
@@ -988,6 +1027,7 @@ void WndTitleStatus()
 
 void InitClientPreLoadHelper()
 {
+	SetGameLanguage();
 	EnableLANOnlineTweaks();
 	EnableDebugModeMenus();
 	ForceFastBoot();
